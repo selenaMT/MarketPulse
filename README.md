@@ -180,3 +180,50 @@ If you add new functionality:
 - expose data via `api` only after service/repository integration
 
 For implementation conventions, see `DEVELOPER_INSTRUCTIONS.md`.
+
+## Backend Setup (Current)
+
+### 1) Environment variables
+Create a root `.env` file:
+
+```env
+NEWS_API_KEY=...
+OPENAI_API_KEY=...
+DATABASE_URL=postgresql+psycopg://<user>:<password>@<host>:<port>/postgres?sslmode=require
+```
+
+Notes:
+- Use Supabase Session Pooler URI if direct DB host is not reachable on your network.
+- Keep `sslmode=require`.
+
+### 2) Install backend dependencies
+
+```bash
+cd backend
+python -m pip install -r requirements.txt
+```
+
+### 3) Initialize database schema
+Run `database/schema.sql` once in Supabase SQL Editor.
+
+### 4) Run ingestion pipeline
+
+```bash
+python scripts/ingest_news.py --q "inflation" --page-size 20
+```
+
+Expected output includes:
+- `embedded_count`
+- `persisted_count`
+- optional `persistence_error` if DB write fails
+
+### 5) Verify rows in DB
+
+```sql
+select count(*) from public.articles;
+
+select title, canonical_url, created_at
+from public.articles
+order by created_at desc
+limit 10;
+```

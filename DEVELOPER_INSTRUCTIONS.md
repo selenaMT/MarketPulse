@@ -153,3 +153,27 @@ Before opening a PR, verify:
 - Frontend should consume API outputs, not re-implement backend processing.
 - Prefer small, focused files over large multipurpose modules.
 - If a file grows too much, split by responsibility instead of adding mixed logic.
+
+## Database Conventions (Current)
+
+- Database: Supabase PostgreSQL accessed via SQLAlchemy + psycopg.
+- Connection config: root `.env` (`DATABASE_URL`), loaded by scripts and DB session module.
+- Schema bootstrap: `database/schema.sql` is the current source of truth for initial setup.
+- Migrations: not enabled yet in this phase.
+
+### Current persistence flow
+
+1. `backend/scripts/ingest_news.py` starts ingestion job.
+2. `backend/app/pipelines/news_ingestion_pipeline.py` fetches + embeds.
+3. `backend/app/repositories/article_repository.py` upserts into `articles`.
+
+### Rules
+
+- Keep SQL/DB writes in repositories only.
+- Pipelines orchestrate; they do not contain SQL.
+- If persistence fails, surface clear error messages to script output.
+
+### Supabase connectivity note
+
+- If direct host (`db.<project-ref>.supabase.co`) fails on IPv4 networks, use Supabase Session Pooler URI.
+- Keep `?sslmode=require` in `DATABASE_URL`.

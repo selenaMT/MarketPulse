@@ -8,6 +8,7 @@ from app.models.embedding import MAX_BATCH_SIZE
 from app.repositories.article_repository import ArticleRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.fetchers.newsapi_source import NewsApiSource
+from app.utils.url import canonicalize_url
 
 
 class NewsIngestionPipeline:
@@ -32,9 +33,14 @@ class NewsIngestionPipeline:
         embedded_articles, skipped_count, embedding_errors = self._embed_articles(deduped_articles)
 
         # Stage 3: store to DB.
-        persisted_count, persistence_errors, persistence_error_message = self._persist_articles(
-            embedded_articles
-        )
+        (
+            persisted_count,
+            inserted_count,
+            updated_count,
+            invalid_url_count,
+            persistence_errors,
+            persistence_error_message,
+        ) = self._persist_articles(embedded_articles)
 
         return {
             "fetched_count": len(fetched_articles),
@@ -42,6 +48,9 @@ class NewsIngestionPipeline:
             "duplicate_count": duplicate_count,
             "embedded_count": len(embedded_articles),
             "persisted_count": persisted_count,
+            "inserted_count": inserted_count,
+            "updated_count": updated_count,
+            "invalid_url_count": invalid_url_count,
             "skipped_count": skipped_count,
             "errors_count": fetch_errors + embedding_errors + persistence_errors,
             "persistence_error": persistence_error_message,
@@ -69,7 +78,11 @@ class NewsIngestionPipeline:
                 deduped.append(article)
                 continue
 
-            normalized_url = raw_url.strip().lower()
+            normalized_url = canonicalize_url(raw_url)
+            if not normalized_url:
+                deduped.append(article)
+                continue
+
             if normalized_url in seen_urls:
                 continue
 
@@ -122,16 +135,20 @@ class NewsIngestionPipeline:
         skipped_count = len(articles) - len(embedded_articles)
         return embedded_articles, skipped_count, errors_count
 
-    def _persist_articles(self, articles: list[dict[str, Any]]) -> tuple[int, int, str | None]:
+    def _persist_articles(
+        self, articles: list[dict[str, Any]]
+    ) -> tuple[int, int, int, int, int, str | None]:
         if not articles:
-            return 0, 0, None
+            return 0, 0, 0, 0, 0, None
         if self._article_repository is None:
-            return 0, 0, None
+            return 0, 0, 0, 0, 0, None
         try:
-            persisted_count = self._article_repository.upsert_many(articles)
-            return persisted_count, 0, None
+            persisted_count, invalid_url_count, inserted_count, updated_count = (
+                self._article_repository.upsert_many(articles)
+            )
+            return persisted_count, inserted_count, updated_count, invalid_url_count, 0, None
         except Exception as exc:
-            return 0, 1, str(exc)
+            return 0, 0, 0, 0, 1, str(exc)
 
     @staticmethod
     def _article_to_text(article: dict[str, Any]) -> str | None:

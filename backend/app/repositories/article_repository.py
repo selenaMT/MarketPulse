@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models.article import Article
-
-TRACKING_PREFIXES = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid")
+from app.utils.url import canonicalize_url
 
 
 class ArticleRepository:
@@ -21,11 +19,24 @@ class ArticleRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def upsert_many(self, articles: list[dict[str, Any]]) -> int:
+    def upsert_many(self, articles: list[dict[str, Any]]) -> tuple[int, int]:
         """Insert or update articles using canonical_url as dedupe key."""
-        rows = [self._to_row(article) for article in articles]
+        rows: list[dict[str, Any]] = []
+        invalid_url_count = 0
+        for article in articles:
+            try:
+                rows.append(self._to_row(article))
+            except ValueError:
+                invalid_url_count += 1
         if not rows:
-            return 0
+            return 0, invalid_url_count
+
+        canonical_urls = [row["canonical_url"] for row in rows]
+        existing_before = set(
+            self._session.execute(
+                select(Article.canonical_url).where(Article.canonical_url.in_(canonical_urls))
+            ).scalars()
+        )
 
         stmt = insert(Article.__table__).values(rows)
         excluded = stmt.excluded
@@ -52,7 +63,9 @@ class ArticleRepository:
 
         self._session.execute(upsert_stmt)
         self._session.commit()
-        return len(rows)
+        updated_count = len(existing_before)
+        inserted_count = len(rows) - updated_count
+        return len(rows), invalid_url_count, inserted_count, updated_count
 
     def search_similar(
         self,
@@ -103,7 +116,7 @@ class ArticleRepository:
             source_name = source.strip()
 
         url = str(article.get("url") or "").strip()
-        canonical_url = self._canonicalize_url(url) if url else ""
+        canonical_url = canonicalize_url(url) if url else None
         if not canonical_url:
             raise ValueError("Article is missing URL; cannot build canonical_url")
 
@@ -129,20 +142,6 @@ class ArticleRepository:
         }
 
     @staticmethod
-    def _canonicalize_url(url: str) -> str:
-        parsed = urlsplit(url.strip())
-        if not parsed.scheme or not parsed.netloc:
-            return ""
-        kept_query_pairs = [
-            (k, v)
-            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-            if not any(k.lower().startswith(prefix) for prefix in TRACKING_PREFIXES)
-        ]
-        clean_query = urlencode(kept_query_pairs, doseq=True)
-        normalized_path = parsed.path.rstrip("/") or "/"
-        return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), normalized_path, clean_query, ""))
-
-    @staticmethod
     def _parse_datetime(value: Any) -> datetime | None:
         if isinstance(value, datetime):
             return value
@@ -166,4 +165,3 @@ class ArticleRepository:
             return None
         text = str(value).strip()
         return text or None
-

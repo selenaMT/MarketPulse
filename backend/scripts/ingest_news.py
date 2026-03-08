@@ -71,6 +71,9 @@ def main() -> None:
     print(f"duplicate_count={result['duplicate_count']}")
     print(f"embedded_count={result['embedded_count']}")
     print(f"persisted_count={result['persisted_count']}")
+    print(f"inserted_count={result['inserted_count']}")
+    print(f"updated_count={result['updated_count']}")
+    print(f"invalid_url_count={result['invalid_url_count']}")
     print(f"skipped_count={result['skipped_count']}")
     print(f"errors_count={result['errors_count']}")
     if result.get("persistence_error"):

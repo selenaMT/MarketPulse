@@ -4,6 +4,7 @@ import json
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
+from app.services.knowledge_graph import extract_knowledge_graph, merge_graph, render_graph
 
 def get_news():
     load_dotenv()
@@ -36,5 +37,12 @@ def get_news():
         
 
         print(response.data[0].embedding)
+
+        # Extract and merge knowledge graph
+        graph_doc = extract_knowledge_graph(articles[i]["description"])
+        merge_graph(graph_doc)
+
+    # Render the knowledge graph
+    render_graph()
 if __name__ == "__main__":
     get_news()

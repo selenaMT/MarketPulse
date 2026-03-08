@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 import os
+import logging
+import re
 
 load_dotenv()
 #Get API key from environment variable
@@ -16,25 +18,61 @@ llm = ChatOpenAI(temperature=0,model="gpt-4o")
 graph_transformer = LLMGraphTransformer(llm = llm)
 
 # WIKIDATA deduplication
-WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_SEARCH_URL = "https://www.wikidata.org/w/api.php"
+WIKIDATA_TIMEOUT_SECONDS = 5
+WIKIDATA_USER_AGENT = os.getenv(
+    "WIKIDATA_USER_AGENT",
+    "MarketPulseBot/0.1 (https://github.com/marketpulse; contact: your-email@example.com)",
+)
+WIKIDATA_BATCH_SIZE = int(os.getenv("WIKIDATA_BATCH_SIZE", "25"))
 
 # Cache for WIKIDATA lookups to avoid redundant API calls
 wikidata_cache = {}
+logger = logging.getLogger(__name__)
+QID_PATTERN = re.compile(r"^Q\d+$", re.IGNORECASE)
+
+
+def _normalize_entity_name(entity_name):
+    if not isinstance(entity_name, str):
+        return ""
+    return " ".join(entity_name.strip().split())
+
+
+def _is_wikidata_qid(text):
+    return bool(QID_PATTERN.match(text))
 
 def query_wikidata(entity_name):
     """Query WIKIDATA to get the canonical entity ID and information."""
-    if entity_name in wikidata_cache:
-        return wikidata_cache[entity_name]
+    normalized_name = _normalize_entity_name(entity_name)
+    if not normalized_name:
+        return None
+
+    cache_key = normalized_name.lower()
+    if cache_key in wikidata_cache:
+        return wikidata_cache[cache_key]
+
+    # Already a Wikidata QID; avoid extra network call.
+    if _is_wikidata_qid(normalized_name):
+        qid = normalized_name.upper()
+        info = {"wikidata_id": qid, "label": qid, "description": None}
+        wikidata_cache[cache_key] = info
+        return info
     
     try:
         params = {
             "action": "wbsearchentities",
-            "search": entity_name,
+            "search": normalized_name,
             "language": "en",
-            "format": "json"
+            "format": "json",
+            "limit": 1,
         }
-        response = requests.get(WIKIDATA_SEARCH_URL, params=params, timeout=5)
+        response = requests.get(
+            WIKIDATA_SEARCH_URL,
+            params=params,
+            timeout=WIKIDATA_TIMEOUT_SECONDS,
+            headers={"User-Agent": WIKIDATA_USER_AGENT},
+        )
+        response.raise_for_status()
         results = response.json()
         
         if results.get("search"):
@@ -44,24 +82,83 @@ def query_wikidata(entity_name):
                 "label": entity.get("label"),
                 "description": entity.get("description")
             }
-            wikidata_cache[entity_name] = wikidata_info
+            wikidata_cache[cache_key] = wikidata_info
             return wikidata_info
-    except Exception as e:
-        print(f"WIKIDATA lookup failed for '{entity_name}': {e}")
+        # Negative cache to avoid repeated misses.
+        wikidata_cache[cache_key] = None
+    except requests.RequestException as e:
+        logger.warning("WIKIDATA lookup failed for '%s': %s", normalized_name, e)
+    except ValueError as e:
+        logger.warning("WIKIDATA response parse failed for '%s': %s", normalized_name, e)
     
     return None
 
+
+def resolve_entity(node_id):
+    """Resolve an entity into canonical graph key + display label."""
+    raw = _normalize_entity_name(node_id)
+    if not raw:
+        return {"key": "", "label": "", "description": None}
+
+    info = query_wikidata(raw)
+    if info and info.get("wikidata_id"):
+        return {
+            "key": info["wikidata_id"],
+            "label": info.get("label") or raw,
+            "description": info.get("description"),
+        }
+    return {"key": raw.lower(), "label": raw, "description": None}
+
+
+def _chunk(items, size):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def resolve_entities_batched(node_ids):
+    """Resolve unique entity ids in bounded-size sequential batches."""
+    normalized_unique = []
+    seen = set()
+    for node_id in node_ids:
+        normalized = _normalize_entity_name(node_id)
+        if not normalized:
+            continue
+        cache_key = normalized.lower()
+        if cache_key in seen:
+            continue
+        seen.add(cache_key)
+        normalized_unique.append(normalized)
+
+    resolved = {}
+    if not normalized_unique:
+        return resolved
+
+    for batch in _chunk(normalized_unique, max(1, WIKIDATA_BATCH_SIZE)):
+        for name in batch:
+            try:
+                resolved[name.lower()] = resolve_entity(name)
+            except Exception as exc:
+                logger.warning("Entity resolution failed for '%s': %s", name, exc)
+                resolved[name.lower()] = {"key": name.lower(), "label": name, "description": None}
+
+    return resolved
+
 def are_nodes_duplicate(node1_id, node2_id, similarity_threshold=0.85):
     """Check if two nodes represent the same entity using WIKIDATA and string similarity."""
+    left = _normalize_entity_name(node1_id)
+    right = _normalize_entity_name(node2_id)
+    if not left or not right:
+        return False
+
     # First check string similarity
-    similarity = SequenceMatcher(None, node1_id.lower(), node2_id.lower()).ratio()
+    similarity = SequenceMatcher(None, left.lower(), right.lower()).ratio()
     
     if similarity > similarity_threshold:
         return True
     
     # Query WIKIDATA for both nodes
-    wikidata1 = query_wikidata(node1_id)
-    wikidata2 = query_wikidata(node2_id)
+    wikidata1 = query_wikidata(left)
+    wikidata2 = query_wikidata(right)
     
     # If both found in WIKIDATA and have the same ID, they're duplicates
     if wikidata1 and wikidata2 and wikidata1.get("wikidata_id") == wikidata2.get("wikidata_id"):
@@ -71,10 +168,14 @@ def are_nodes_duplicate(node1_id, node2_id, similarity_threshold=0.85):
 
 def get_canonical_node_id(node_id):
     """Get the canonical node ID, preferring WIKIDATA ID if available."""
-    wikidata_info = query_wikidata(node_id)
+    normalized_node_id = _normalize_entity_name(node_id)
+    if not normalized_node_id:
+        return node_id
+
+    wikidata_info = query_wikidata(normalized_node_id)
     if wikidata_info:
-        return wikidata_info.get("wikidata_id", node_id)
-    return node_id
+        return wikidata_info.get("wikidata_id", normalized_node_id)
+    return normalized_node_id
 
 def extract_knowledge_graph(text):
     documents = [Document(page_content = text)]
@@ -82,7 +183,7 @@ def extract_knowledge_graph(text):
     return graph_document[0]
 
 from pyvis.network import Network
-import os, webbrowser
+import webbrowser
 
 # Initialize once
 net = Network(height="1200px", width="100%", directed=True,
@@ -97,25 +198,31 @@ def merge_graph(graph_document):
 
     # Mapping of duplicate nodes to canonical nodes
     node_mapping = {}
+    resolved_map = resolve_entities_batched([node.id for node in nodes])
 
-    # Add new nodes with deduplication
+    # Add new nodes with deduplication.
+    # Use canonical key for identity, but display human-readable label.
     for node in nodes:
-        canonical_id = get_canonical_node_id(node.id)
-        
-        # Check if this node is a duplicate of an existing node
-        is_duplicate = False
-        for existing_node_id in added_nodes:
-            if are_nodes_duplicate(canonical_id, existing_node_id):
-                node_mapping[node.id] = existing_node_id
-                is_duplicate = True
-                print(f"Deduplicated: '{node.id}' -> '{existing_node_id}'")
-                break
-        
-        if not is_duplicate:
-            if canonical_id not in added_nodes:
-                net.add_node(canonical_id, label=canonical_id, title=node.type, group=node.type)
-                added_nodes.add(canonical_id)
-                node_mapping[node.id] = canonical_id
+        normalized_node_id = _normalize_entity_name(node.id)
+        if not normalized_node_id:
+            continue
+        resolved = resolved_map.get(normalized_node_id.lower()) or resolve_entity(normalized_node_id)
+        canonical_key = resolved["key"]
+        if not canonical_key:
+            continue
+
+        node_mapping[node.id] = canonical_key
+        if canonical_key in added_nodes:
+            continue
+
+        display_label = resolved["label"] or canonical_key
+        description = resolved["description"] or ""
+        title = f"{display_label}\n{node.type}"
+        if description:
+            title = f"{title}\n{description}"
+
+        net.add_node(canonical_key, label=display_label, title=title, group=node.type)
+        added_nodes.add(canonical_key)
 
     # Add new edges using deduplicated node IDs
     for rel in relationships:

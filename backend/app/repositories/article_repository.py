@@ -66,7 +66,20 @@ class ArticleRepository:
         updated_count = len(existing_before)
         inserted_count = len(rows) - updated_count
         return len(rows), invalid_url_count, inserted_count, updated_count
+        
+    def get_unprocessed_articles(self, limit: int = 100) -> list[Article]:
+        """Get articles that haven't been processed yet (no 'processed' in metadata)."""
+        return self._session.query(Article).filter(
+            ~Article.metadata_json.contains({"processed": True})
+        ).limit(limit).all()
 
+    def update_article_metadata(self, article_id: str, metadata: dict) -> None:
+        """Update the metadata of an article."""
+        self._session.query(Article).filter(Article.id == article_id).update(
+            {"metadata_json": metadata}
+        )
+        self._session.commit()
+        
     def search_similar(
         self,
         query_embedding: list[float],

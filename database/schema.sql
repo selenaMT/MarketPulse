@@ -12,6 +12,7 @@ create table if not exists articles (
   content text null,
   author text null,
   language varchar(8) null,
+  region text null,
   published_at timestamptz null,
   embedding vector(1536) null,
   embedding_model text null default 'text-embedding-3-small',

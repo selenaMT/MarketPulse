@@ -20,6 +20,7 @@ from app.pipelines.news_ingestion_pipeline import NewsIngestionPipeline
 from app.repositories.article_repository import ArticleRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.fetchers.newsapi_source import NewsApiSource
+from app.services.text_processing_service import TextProcessingService
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,11 +45,13 @@ def main() -> None:
 
     fetcher = NewsApiSource(api_key=news_api_key)
     embedding_service = EmbeddingService()
+    text_processing_service = TextProcessingService()
     db_session = SessionLocal()
     article_repository = ArticleRepository(db_session)
     pipeline = NewsIngestionPipeline(
         fetchers=[fetcher],
         embedding_service=embedding_service,
+        text_processing_service=text_processing_service,
         article_repository=article_repository,
     )
 
@@ -70,6 +73,11 @@ def main() -> None:
     print(f"deduped_count={result['deduped_count']}")
     print(f"duplicate_count={result['duplicate_count']}")
     print(f"embedded_count={result['embedded_count']}")
+    print(f"text_processed_count={result.get('text_processed_count', 0)}")
+    print(f"filtered_out_count={result.get('filtered_out_count', 0)}")
+    print(f"deleted_filtered_count={result.get('deleted_filtered_count', 0)}")
+    print(f"text_processing_retry_count={result.get('text_processing_retry_count', 0)}")
+    print(f"text_processing_discarded_count={result.get('text_processing_discarded_count', 0)}")
     print(f"persisted_count={result['persisted_count']}")
     print(f"inserted_count={result['inserted_count']}")
     print(f"updated_count={result['updated_count']}")
@@ -78,11 +86,15 @@ def main() -> None:
     print(f"errors_count={result['errors_count']}")
     print(f"fetch_errors_count={result.get('fetch_errors_count', 0)}")
     print(f"embedding_errors_count={result.get('embedding_errors_count', 0)}")
+    print(f"text_processing_errors_count={result.get('text_processing_errors_count', 0)}")
+    print(f"deletion_errors_count={result.get('deletion_errors_count', 0)}")
     print(f"persistence_errors_count={result.get('persistence_errors_count', 0)}")
     for idx, message in enumerate(result.get("fetch_error_messages", []), start=1):
         print(f"fetch_error_{idx}={message}")
     if result.get("persistence_error"):
         print(f"persistence_error={result['persistence_error']}")
+    if result.get("deletion_error"):
+        print(f"deletion_error={result['deletion_error']}")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,7 @@ class ArticleRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def upsert_many(self, articles: list[dict[str, Any]]) -> tuple[int, int]:
+    def upsert_many(self, articles: list[dict[str, Any]]) -> tuple[int, int, int, int]:
         """Insert or update articles using canonical_url as dedupe key."""
         rows: list[dict[str, Any]] = []
         invalid_url_count = 0
@@ -51,6 +51,7 @@ class ArticleRepository:
                 "content": excluded.content,
                 "author": excluded.author,
                 "language": excluded.language,
+                "region": excluded.region,
                 "published_at": excluded.published_at,
                 "embedding": excluded.embedding,
                 "embedding_model": excluded.embedding_model,
@@ -133,6 +134,95 @@ class ArticleRepository:
             for row in rows
         ]
 
+    def delete_by_canonical_urls(self, canonical_urls: list[str]) -> int:
+        """Delete articles by canonical URL and return deleted row count."""
+        normalized = [url.strip() for url in canonical_urls if isinstance(url, str) and url.strip()]
+        if not normalized:
+            return 0
+
+        stmt = delete(Article).where(Article.canonical_url.in_(normalized))
+        result = self._session.execute(stmt)
+        self._session.commit()
+        return int(result.rowcount or 0)
+
+    def delete_by_ids(self, article_ids: list[Any]) -> int:
+        """Delete articles by primary key and return deleted row count."""
+        normalized = [article_id for article_id in article_ids if article_id]
+        if not normalized:
+            return 0
+
+        stmt = delete(Article).where(Article.id.in_(normalized))
+        result = self._session.execute(stmt)
+        self._session.commit()
+        return int(result.rowcount or 0)
+
+    def backfill_region_from_metadata(self) -> int:
+        """Fill region column from metadata.text_processing.region when available."""
+        stmt = text(
+            """
+            update articles
+            set region = nullif(metadata->'text_processing'->>'region', '')
+            where region is null
+              and metadata ? 'text_processing'
+            """
+        )
+        result = self._session.execute(stmt)
+        self._session.commit()
+        return int(result.rowcount or 0)
+
+    def list_missing_text_processing(self, limit: int) -> list[dict[str, Any]]:
+        """Return candidate rows that do not yet have metadata.text_processing."""
+        if limit <= 0:
+            return []
+
+        metadata_column = Article.__table__.c.metadata
+        query = (
+            select(
+                Article.id,
+                Article.canonical_url,
+                Article.title,
+                Article.description,
+                Article.content,
+                Article.region,
+            )
+            .where(~metadata_column.op("?")("text_processing"))
+            .order_by(Article.created_at.asc(), Article.id.asc())
+            .limit(limit)
+        )
+        rows = self._session.execute(query).all()
+        return [
+            {
+                "article_id": row.id,
+                "canonical_url": row.canonical_url,
+                "title": row.title,
+                "description": row.description,
+                "content": row.content,
+                "region": row.region,
+            }
+            for row in rows
+        ]
+
+    def apply_text_processing_updates(self, updates: list[tuple[Any, dict[str, Any]]]) -> int:
+        """Persist text_processing payload to metadata and set region from payload."""
+        if not updates:
+            return 0
+
+        updated_count = 0
+        for article_id, payload in updates:
+            article = self._session.get(Article, article_id)
+            if article is None:
+                continue
+
+            metadata = dict(article.metadata_json or {})
+            metadata["text_processing"] = payload
+            article.metadata_json = metadata
+            region = self._to_optional_str(payload.get("region"))
+            article.region = region
+            updated_count += 1
+
+        self._session.commit()
+        return updated_count
+
     def _to_row(self, article: dict[str, Any]) -> dict[str, Any]:
         source = article.get("source")
         source_name = self._to_optional_str(article.get("source_name")) or "unknown"
@@ -155,6 +245,8 @@ class ArticleRepository:
 
         published_at = self._parse_datetime(article.get("publishedAt") or article.get("published_at"))
         embedding = article.get("embedding")
+        metadata = self._build_metadata(article)
+        region = self._extract_region(article)
 
         return {
             "source_name": source_name,
@@ -166,11 +258,12 @@ class ArticleRepository:
             "content": self._to_optional_str(article.get("content")),
             "author": self._to_optional_str(article.get("author")),
             "language": self._to_optional_str(article.get("language")),
+            "region": region,
             "published_at": published_at,
             "embedding": embedding if isinstance(embedding, list) and embedding else None,
             "embedding_model": "text-embedding-3-small" if embedding else None,
             "embedded_at": datetime.now(timezone.utc) if embedding else None,
-            "metadata": {},
+            "metadata": metadata,
             "raw_payload": article,
         }
 
@@ -222,3 +315,21 @@ class ArticleRepository:
             seen_lower.add(key)
             deduped.append(normalized)
         return deduped
+
+    @staticmethod
+    def _build_metadata(article: dict[str, Any]) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        text_processing = article.get("text_processing")
+        if isinstance(text_processing, dict):
+            metadata["text_processing"] = text_processing
+        return metadata
+
+    def _extract_region(self, article: dict[str, Any]) -> str | None:
+        direct_region = self._to_optional_str(article.get("region"))
+        if direct_region:
+            return direct_region
+
+        text_processing = article.get("text_processing")
+        if isinstance(text_processing, dict):
+            return self._to_optional_str(text_processing.get("region"))
+        return None

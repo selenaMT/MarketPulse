@@ -45,3 +45,27 @@ def test_normalize_source_filters_dedupes_and_trims():
     )
 
     assert normalized == ["Reuters", "BBC News", "The Guardian"]
+
+
+def test_to_row_stores_text_processing_in_metadata():
+    repository = ArticleRepository.__new__(ArticleRepository)
+
+    row = repository._to_row(
+        {
+            "source_name": "Reuters",
+            "url": "https://example.com/articles/fed",
+            "title": "Fed signals patience",
+            "text_processing": {
+                "event": "Federal Reserve signaled patience on rates",
+                "entities": [],
+                "region": "US",
+                "policy_signal": "neutral",
+                "asset_impacts": [],
+                "relationships": [],
+                "keep": True,
+            },
+        }
+    )
+
+    assert row["metadata"]["text_processing"]["region"] == "US"
+    assert row["region"] == "US"

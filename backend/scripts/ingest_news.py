@@ -76,6 +76,11 @@ def main() -> None:
     print(f"invalid_url_count={result['invalid_url_count']}")
     print(f"skipped_count={result['skipped_count']}")
     print(f"errors_count={result['errors_count']}")
+    print(f"fetch_errors_count={result.get('fetch_errors_count', 0)}")
+    print(f"embedding_errors_count={result.get('embedding_errors_count', 0)}")
+    print(f"persistence_errors_count={result.get('persistence_errors_count', 0)}")
+    for idx, message in enumerate(result.get("fetch_error_messages", []), start=1):
+        print(f"fetch_error_{idx}={message}")
     if result.get("persistence_error"):
         print(f"persistence_error={result['persistence_error']}")
 

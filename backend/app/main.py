@@ -26,6 +26,11 @@ class SemanticSearchResponseItem(BaseModel):
     similarity: float = Field(ge=-1.0, le=1.0)
 
 
+class SourceOptionResponseItem(BaseModel):
+    source_name: str
+    article_count: int = Field(ge=1)
+
+
 def get_db_session() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
@@ -45,6 +50,10 @@ def semantic_search_articles(
     limit: int = Query(20, ge=1, le=100),
     min_published_at: datetime | None = Query(default=None),
     source_name: str | None = Query(default=None, min_length=1),
+    source_names: list[str] | None = Query(
+        default=None,
+        description="Optional repeated source filters, or comma-separated values.",
+    ),
     session: Session = Depends(get_db_session),
 ) -> list[SemanticSearchResponseItem]:
     article_repository = ArticleRepository(session)
@@ -55,11 +64,12 @@ def semantic_search_articles(
     )
 
     try:
+        normalized_source_names = _normalize_source_filters(source_name, source_names)
         rows = search_service.search_by_keywords(
             keywords=keywords,
             limit=limit,
             min_published_at=min_published_at,
-            source_name=source_name,
+            source_names=normalized_source_names,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -75,3 +85,38 @@ def semantic_search_articles(
         )
         for row in rows
     ]
+
+
+@app.get("/articles/sources", response_model=list[SourceOptionResponseItem])
+def list_article_sources(session: Session = Depends(get_db_session)) -> list[SourceOptionResponseItem]:
+    article_repository = ArticleRepository(session)
+    rows = article_repository.list_sources()
+    return [
+        SourceOptionResponseItem(
+            source_name=str(row["source_name"]),
+            article_count=int(row["article_count"]),
+        )
+        for row in rows
+    ]
+
+
+def _normalize_source_filters(
+    source_name: str | None,
+    source_names: list[str] | None,
+) -> list[str]:
+    merged: list[str] = []
+    if source_name:
+        merged.append(source_name)
+    for raw_value in source_names or []:
+        parts = [part.strip() for part in raw_value.split(",")]
+        merged.extend([part for part in parts if part])
+
+    deduped: list[str] = []
+    seen_lower: set[str] = set()
+    for source in merged:
+        key = source.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        deduped.append(source)
+    return deduped

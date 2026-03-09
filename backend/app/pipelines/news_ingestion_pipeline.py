@@ -26,7 +26,7 @@ class NewsIngestionPipeline:
 
     def run(self, **fetch_params: Any) -> dict[str, Any]:
         # Stage 1: fetch orchestration.
-        fetched_articles, fetch_errors = self._fetch_articles(**fetch_params)
+        fetched_articles, fetch_errors, fetch_error_messages = self._fetch_articles(**fetch_params)
         deduped_articles, duplicate_count = self._dedupe_by_url(fetched_articles)
 
         # Stage 2: embed fetched results.
@@ -53,19 +53,25 @@ class NewsIngestionPipeline:
             "invalid_url_count": invalid_url_count,
             "skipped_count": skipped_count,
             "errors_count": fetch_errors + embedding_errors + persistence_errors,
+            "fetch_errors_count": fetch_errors,
+            "embedding_errors_count": embedding_errors,
+            "persistence_errors_count": persistence_errors,
+            "fetch_error_messages": fetch_error_messages,
             "persistence_error": persistence_error_message,
             "articles": embedded_articles,
         }
 
-    def _fetch_articles(self, **fetch_params: Any) -> tuple[list[dict[str, Any]], int]:
+    def _fetch_articles(self, **fetch_params: Any) -> tuple[list[dict[str, Any]], int, list[str]]:
         all_articles: list[dict[str, Any]] = []
         errors_count = 0
+        error_messages: list[str] = []
         for fetcher in self._fetchers:
             try:
                 all_articles.extend(fetcher.fetch(**fetch_params))
-            except Exception:
+            except Exception as exc:
                 errors_count += 1
-        return all_articles, errors_count
+                error_messages.append(str(exc))
+        return all_articles, errors_count, error_messages
 
     @staticmethod
     def _dedupe_by_url(articles: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:

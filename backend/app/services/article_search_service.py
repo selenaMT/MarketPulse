@@ -26,6 +26,7 @@ class ArticleSearchService:
         limit: int = 20,
         min_published_at: datetime | None = None,
         source_name: str | None = None,
+        source_names: list[str] | None = None,
     ) -> list[dict[str, object]]:
         normalized_keywords = keywords.strip()
         if not normalized_keywords:
@@ -37,4 +38,5 @@ class ArticleSearchService:
             limit=limit,
             min_published_at=min_published_at,
             source_name=source_name,
+            source_names=source_names,
         )

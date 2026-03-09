@@ -73,6 +73,7 @@ class ArticleRepository:
         limit: int = 20,
         min_published_at: datetime | None = None,
         source_name: str | None = None,
+        source_names: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Find similar articles via cosine distance."""
         similarity = (1 - Article.embedding.cosine_distance(query_embedding)).label("similarity")
@@ -91,8 +92,12 @@ class ArticleRepository:
         )
         if min_published_at is not None:
             query = query.where(Article.published_at >= min_published_at)
-        if source_name:
-            query = query.where(Article.source_name == source_name)
+        normalized_sources = self._normalize_source_filters(
+            source_name=source_name,
+            source_names=source_names,
+        )
+        if normalized_sources:
+            query = query.where(Article.source_name.in_(normalized_sources))
 
         rows = self._session.execute(query).all()
         return [
@@ -107,13 +112,41 @@ class ArticleRepository:
             for row in rows
         ]
 
+    def list_sources(self) -> list[dict[str, Any]]:
+        """Return distinct article sources with document counts."""
+        query = (
+            select(
+                Article.source_name.label("source_name"),
+                func.count(Article.id).label("article_count"),
+            )
+            .where(Article.source_name.is_not(None))
+            .where(func.length(func.trim(Article.source_name)) > 0)
+            .group_by(Article.source_name)
+            .order_by(func.count(Article.id).desc(), Article.source_name.asc())
+        )
+        rows = self._session.execute(query).all()
+        return [
+            {
+                "source_name": str(row.source_name),
+                "article_count": int(row.article_count),
+            }
+            for row in rows
+        ]
+
     def _to_row(self, article: dict[str, Any]) -> dict[str, Any]:
         source = article.get("source")
-        source_name = "unknown"
+        source_name = self._to_optional_str(article.get("source_name")) or "unknown"
         if isinstance(source, dict):
             source_name = str(source.get("name") or source.get("id") or "unknown")
         elif isinstance(source, str) and source.strip():
             source_name = source.strip()
+        source_article_id = self._to_optional_str(article.get("source_article_id"))
+        if source_article_id is None:
+            source_article_id = self._to_optional_str(article.get("source_id"))
+        if source_article_id is None and isinstance(source, dict):
+            source_article_id = self._to_optional_str(source.get("id"))
+        if source_article_id is None and article.get("id") is not None:
+            source_article_id = str(article.get("id"))
 
         url = str(article.get("url") or "").strip()
         canonical_url = canonicalize_url(url) if url else None
@@ -125,7 +158,7 @@ class ArticleRepository:
 
         return {
             "source_name": source_name,
-            "source_article_id": str(article.get("id")) if article.get("id") is not None else None,
+            "source_article_id": source_article_id,
             "url": url,
             "canonical_url": canonical_url,
             "title": self._to_optional_str(article.get("title")),
@@ -165,3 +198,27 @@ class ArticleRepository:
             return None
         text = str(value).strip()
         return text or None
+
+    @staticmethod
+    def _normalize_source_filters(
+        source_name: str | None,
+        source_names: list[str] | None,
+    ) -> list[str]:
+        merged: list[str] = []
+        if source_name:
+            merged.append(source_name)
+        if source_names:
+            merged.extend(source_names)
+
+        deduped: list[str] = []
+        seen_lower: set[str] = set()
+        for source in merged:
+            normalized = source.strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen_lower:
+                continue
+            seen_lower.add(key)
+            deduped.append(normalized)
+        return deduped

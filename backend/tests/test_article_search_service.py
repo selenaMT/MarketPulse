@@ -28,6 +28,7 @@ class FakeArticleRepository:
         limit: int = 20,
         min_published_at: datetime | None = None,
         source_name: str | None = None,
+        source_names: list[str] | None = None,
     ) -> list[dict[str, object]]:
         self.calls.append(
             {
@@ -35,6 +36,7 @@ class FakeArticleRepository:
                 "limit": limit,
                 "min_published_at": min_published_at,
                 "source_name": source_name,
+                "source_names": source_names,
             }
         )
         return self.rows
@@ -63,7 +65,7 @@ def test_search_by_keywords_embeds_input_and_calls_repository():
         keywords="inflation expectations",
         limit=5,
         min_published_at=min_published_at,
-        source_name="Reuters",
+        source_names=["Reuters", "BBC News"],
     )
 
     assert rows == expected_rows
@@ -73,7 +75,8 @@ def test_search_by_keywords_embeds_input_and_calls_repository():
             "query_embedding": [0.1, 0.2, 0.3],
             "limit": 5,
             "min_published_at": min_published_at,
-            "source_name": "Reuters",
+            "source_name": None,
+            "source_names": ["Reuters", "BBC News"],
         }
     ]
 

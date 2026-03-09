@@ -152,11 +152,17 @@ class NewsIngestionPipeline:
 
     @staticmethod
     def _article_to_text(article: dict[str, Any]) -> str | None:
-        content = (article.get("content") or "").strip()
-        description = (article.get("description") or "").strip()
-        title = (article.get("title") or "").strip()
-        text = content or description or title
-        return text if text else None
+        fields = [
+            ("Title", article.get("title")),
+            ("Description", article.get("description")),
+            ("Content", article.get("content")),
+        ]
+        parts: list[str] = []
+        for label, value in fields:
+            text = (value or "").strip()
+            if text:
+                parts.append(f"{label}: {text}")
+        return "\n".join(parts) if parts else None
 
     @staticmethod
     def _chunk(items: list[tuple[int, str]], size: int) -> list[list[tuple[int, str]]]:

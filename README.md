@@ -181,10 +181,17 @@ If you add new functionality:
 
 For implementation conventions, see `DEVELOPER_INSTRUCTIONS.md`.
 
+## Frontend
+
+Frontend-specific setup and UI scope live in:
+- `frontend/README.md`
+
+Use this root README for product architecture and backend pipeline context.
+
 ## Backend Setup (Current)
 
 ### 1) Environment variables
-Create a root `.env` file:
+Create a `.env` file in **root** folder (in MarketPulse/):
 
 ```env
 NEWS_API_KEY=...
@@ -227,3 +234,36 @@ from public.articles
 order by created_at desc
 limit 10;
 ```
+
+### 6) Semantic keyword search
+
+Run API server:
+
+```bash
+cd backend
+uvicorn app.main:app --reload
+```
+
+Search with keywords:
+
+```bash
+curl "http://127.0.0.1:8000/articles/semantic-search?keywords=inflation%20cooling&limit=5"
+```
+
+Or run the CLI:
+
+```bash
+cd backend
+python scripts/search_articles.py --keywords "inflation cooling" --limit 5
+```
+
+### 7) Run frontend UI (semantic search)
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+For proxy configuration and frontend feature details, see `frontend/README.md`.

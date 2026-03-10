@@ -2,17 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 
-function buildBackendUrl(req: NextRequest): string {
+function buildBackendUrl(req: NextRequest, themeId: string): string {
   const upstreamBase =
     process.env.MARKETPULSE_API_BASE_URL ??
     process.env.NEXT_PUBLIC_MARKETPULSE_API_BASE_URL ??
     DEFAULT_API_BASE;
   const query = req.nextUrl.searchParams.toString();
-  return `${upstreamBase}/themes/hot${query ? `?${query}` : ""}`;
+  const encodedThemeId = encodeURIComponent(themeId);
+  return `${upstreamBase}/themes/${encodedThemeId}/timeline${query ? `?${query}` : ""}`;
 }
 
-export async function GET(req: NextRequest) {
-  const url = buildBackendUrl(req);
+export async function GET(
+  req: NextRequest,
+  context: { params: Promise<{ themeId: string }> },
+) {
+  const { themeId } = await context.params;
+  const url = buildBackendUrl(req, themeId);
   try {
     const response = await fetch(url, {
       method: "GET",
@@ -28,7 +33,9 @@ export async function GET(req: NextRequest) {
       } catch {
         return NextResponse.json(
           {
-            detail: text.trim() || `Backend error (${response.status}) while loading hot themes.`,
+            detail:
+              text.trim() ||
+              `Backend error (${response.status}) while loading theme timeline.`,
           },
           { status: response.status },
         );

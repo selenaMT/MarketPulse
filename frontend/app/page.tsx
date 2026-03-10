@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import AuthModal from "./components/AuthModal";
 import { useAuth } from "./contexts/AuthContext";
 
@@ -551,6 +552,12 @@ export default function Home() {
                     status: {theme.status} | last seen:{" "}
                     {theme.last_seen_at ? new Date(theme.last_seen_at).toLocaleString() : "unknown"}
                   </p>
+                  <Link
+                    href={`/themes/${encodeURIComponent(theme.id)}`}
+                    className="mt-3 inline-flex items-center rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--ink)] hover:border-[var(--accent)]"
+                  >
+                    View Timeline
+                  </Link>
                 </li>
               ))}
             </ol>

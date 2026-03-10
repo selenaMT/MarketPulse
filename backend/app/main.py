@@ -21,6 +21,7 @@ from app.repositories.watchlist_repository import WatchlistRepository
 from app.services.article_search_service import ArticleSearchService
 from app.services.chat_service import ChatService
 from app.services.embedding_service import EmbeddingService
+from app.services.theme_timeline_service import ThemeTimelineService
 from app.services.watchlist_service import WatchlistService
 from app.utils.auth import (
     Token,
@@ -65,6 +66,42 @@ class HotThemeResponseItem(BaseModel):
     article_count: int = Field(ge=1)
     last_seen_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class ThemeTimelineThemeResponseItem(BaseModel):
+    id: str
+    slug: str
+    canonical_label: str
+    summary: str | None = None
+    status: str
+    article_count: int = Field(ge=0)
+    current_snapshot_version: int = Field(ge=0)
+    last_snapshot_at: datetime | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+class ThemeTimelineArticleReferenceResponseItem(BaseModel):
+    article_id: str
+    title: str
+    canonical_url: str
+    source_name: str
+    published_at: datetime | None = None
+
+
+class ThemeTimelineNodeResponseItem(BaseModel):
+    snapshot_version: int = Field(ge=0)
+    event_at: datetime | None = None
+    period_label: str
+    article_count: int = Field(ge=0)
+    event_description: str
+    related_articles: list[ThemeTimelineArticleReferenceResponseItem]
+
+
+class ThemeTimelineResponse(BaseModel):
+    theme: ThemeTimelineThemeResponseItem
+    theme_overview: str
+    nodes: list[ThemeTimelineNodeResponseItem]
 
 
 class WatchlistThemeResponseItem(BaseModel):
@@ -280,6 +317,66 @@ def list_hot_themes(
         )
         for row in rows
     ]
+
+
+@app.get("/themes/{theme_id}/timeline", response_model=ThemeTimelineResponse)
+def get_theme_timeline(
+    theme_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_db_session),
+) -> ThemeTimelineResponse:
+    try:
+        normalized_theme_id = str(uuid.UUID(theme_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="theme_id must be a valid UUID.") from exc
+
+    timeline_service = ThemeTimelineService(theme_repository=ThemeRepository(session))
+    try:
+        payload = timeline_service.build_timeline(theme_id=normalized_theme_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    theme = payload.get("theme")
+    nodes = payload.get("nodes")
+    if not isinstance(theme, dict) or not isinstance(nodes, list):
+        raise HTTPException(status_code=500, detail="Invalid timeline payload.")
+
+    return ThemeTimelineResponse(
+        theme=ThemeTimelineThemeResponseItem(
+            id=str(theme["id"]),
+            slug=str(theme["slug"]),
+            canonical_label=str(theme["canonical_label"]),
+            summary=theme.get("summary") if isinstance(theme.get("summary"), str) else None,
+            status=str(theme["status"]),
+            article_count=int(theme.get("article_count") or 0),
+            current_snapshot_version=int(theme.get("current_snapshot_version") or 0),
+            last_snapshot_at=theme.get("last_snapshot_at"),
+            first_seen_at=theme.get("first_seen_at"),
+            last_seen_at=theme.get("last_seen_at"),
+        ),
+        theme_overview=str(payload.get("theme_overview") or ""),
+        nodes=[
+            ThemeTimelineNodeResponseItem(
+                snapshot_version=int(node.get("snapshot_version") or 0),
+                event_at=node.get("event_at"),
+                period_label=str(node.get("period_label") or "Unknown period"),
+                article_count=int(node.get("article_count") or 0),
+                event_description=str(node.get("event_description") or ""),
+                related_articles=[
+                    ThemeTimelineArticleReferenceResponseItem(
+                        article_id=str(article.get("article_id") or ""),
+                        title=str(article.get("title") or "(untitled)"),
+                        canonical_url=str(article.get("canonical_url") or ""),
+                        source_name=str(article.get("source_name") or "Unknown source"),
+                        published_at=article.get("published_at"),
+                    )
+                    for article in (node.get("related_articles") or [])
+                    if isinstance(article, dict)
+                ],
+            )
+            for node in nodes
+        ],
+    )
 
 
 @app.get("/watchlist/themes", response_model=list[WatchlistThemeResponseItem])

@@ -25,6 +25,84 @@ class ThemeRepository:
     def rollback(self) -> None:
         self._session.rollback()
 
+    def get_theme_by_id(self, theme_id: Any) -> dict[str, Any] | None:
+        row = self._session.execute(
+            text(
+                """
+                select
+                  id,
+                  slug,
+                  canonical_label,
+                  summary,
+                  status,
+                  discovery_method,
+                  scope,
+                  owner_user_id,
+                  article_count,
+                  current_snapshot_version,
+                  last_snapshot_at,
+                  first_seen_at,
+                  last_seen_at,
+                  created_at,
+                  updated_at
+                from themes
+                where id = cast(:theme_id as uuid)
+                limit 1
+                """
+            ),
+            {"theme_id": str(theme_id)},
+        ).mappings().first()
+        return dict(row) if row else None
+
+    def list_theme_snapshots(self, theme_id: Any, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._session.execute(
+            text(
+                """
+                select
+                  snapshot_version,
+                  snapshot_created_at,
+                  summary,
+                  article_count,
+                  status,
+                  discovery_method,
+                  canonical_label,
+                  slug
+                from historical_themes
+                where theme_id = cast(:theme_id as uuid)
+                order by snapshot_created_at asc, snapshot_version asc
+                limit :limit
+                """
+            ),
+            {"theme_id": str(theme_id), "limit": max(1, int(limit))},
+        ).mappings().all()
+        return [dict(row) for row in rows]
+
+    def list_theme_linked_articles(
+        self,
+        theme_id: Any,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        rows = self._session.execute(
+            text(
+                """
+                select
+                  a.id as article_id,
+                  a.canonical_url,
+                  a.title,
+                  a.source_name,
+                  a.published_at,
+                  tal.matched_at
+                from theme_article_links tal
+                join articles a on a.id = tal.article_id
+                where tal.theme_id = cast(:theme_id as uuid)
+                order by tal.matched_at asc nulls last, a.published_at asc nulls last, a.id asc
+                limit :limit
+                """
+            ),
+            {"theme_id": str(theme_id), "limit": max(1, int(limit))},
+        ).mappings().all()
+        return [dict(row) for row in rows]
+
     def list_hot_themes(self, limit: int = 10) -> list[dict[str, Any]]:
         try:
             rows = self._session.execute(

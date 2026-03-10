@@ -323,6 +323,35 @@ class ArticleRepository:
         self._session.commit()
         return updated_count
 
+    def get_by_canonical_urls(self, canonical_urls: list[str]) -> list[dict[str, Any]]:
+        """Return article records keyed by canonical URL."""
+        normalized = [url.strip() for url in canonical_urls if isinstance(url, str) and url.strip()]
+        if not normalized:
+            return []
+
+        query = select(
+            Article.id,
+            Article.canonical_url,
+            Article.title,
+            Article.description,
+            Article.content,
+            Article.published_at,
+            Article.metadata_json,
+        ).where(Article.canonical_url.in_(normalized))
+        rows = self._session.execute(query).all()
+        return [
+            {
+                "article_id": row.id,
+                "canonical_url": row.canonical_url,
+                "title": row.title,
+                "description": row.description,
+                "content": row.content,
+                "published_at": row.published_at,
+                "metadata": row.metadata_json or {},
+            }
+            for row in rows
+        ]
+
     def _to_row(self, article: dict[str, Any]) -> dict[str, Any]:
         source = article.get("source")
         source_name = self._to_optional_str(article.get("source_name")) or "unknown"

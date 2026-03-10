@@ -2,11 +2,18 @@
 
 For product architecture and backend pipeline context, see the root `README.md`.
 
-This frontend currently ships the first end-to-end product feature:
+This frontend currently ships:
 - semantic article search by keyword similarity
+- hot theme ranking panel
+- theme evolution timeline panel
+- related developments panel
 
-It calls the local Next.js proxy endpoint:
+It calls local Next.js proxy endpoints:
 - `GET /api/semantic-search`
+- `GET /api/themes/hot`
+- `GET /api/themes/:themeRef`
+- `GET /api/themes/:themeRef/timeline`
+- `GET /api/themes/:themeRef/related`
 
 The proxy forwards requests to backend FastAPI:
 - `GET /articles/semantic-search`
@@ -39,11 +46,6 @@ Open `http://localhost:3000`.
 - source/date/result-limit filters
 - ranked result cards with similarity score
 - loading, empty, and error states
-- roadmap panels for upcoming macro features
-
-## Next planned frontend modules
-
-- theme detection dashboard
-- article entity detail view
-- narrative graph explorer
-- macro signal timeline
+- hot themes with trend and score
+- selected theme stats and timeline
+- related themes and supporting developments

@@ -17,10 +17,13 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.db.session import SessionLocal
 from app.pipelines.news_ingestion_pipeline import NewsIngestionPipeline
+from app.pipelines.theme_management_pipeline import ThemeManagementPipeline
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.theme_repository import ThemeRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.fetchers.newsapi_source import NewsApiSource
 from app.services.text_processing_service import TextProcessingService
+from app.services.theme_management_service import ThemeManagementService
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +35,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sort-by", default="publishedAt", help="NewsAPI sort option.")
     parser.add_argument("--page-size", type=int, default=50, help="NewsAPI page size.")
     parser.add_argument("--page", type=int, default=1, help="NewsAPI page number.")
+    parser.add_argument(
+        "--skip-theme-sync",
+        action="store_true",
+        help="Skip theme assignment/snapshot refresh after ingestion.",
+    )
+    parser.add_argument(
+        "--theme-assignment-limit",
+        type=int,
+        default=500,
+        help="Maximum unlinked articles for theme assignment when theme sync runs.",
+    )
+    parser.add_argument(
+        "--theme-assignment-lookback-days",
+        type=int,
+        default=None,
+        help="Optional lookback window for theme assignment candidates.",
+    )
+    parser.add_argument(
+        "--theme-snapshot-lookback-days",
+        type=int,
+        default=90,
+        help="Theme snapshot lookback window in days.",
+    )
+    parser.add_argument(
+        "--theme-relation-lookback-days",
+        type=int,
+        default=45,
+        help="Theme relation lookback window in days.",
+    )
+    parser.add_argument(
+        "--theme-run-maintenance",
+        action="store_true",
+        help="Run merge/split recommendation maintenance as part of sync.",
+    )
+    parser.add_argument(
+        "--theme-rebuild-centroids",
+        action="store_true",
+        help="Rebuild all theme centroids after assignment.",
+    )
+    parser.add_argument(
+        "--theme-no-record-run",
+        action="store_true",
+        help="Skip writing theme sync metrics to theme_sync_runs.",
+    )
     return parser.parse_args()
 
 
@@ -65,6 +112,24 @@ def main() -> None:
             page_size=args.page_size,
             page=args.page,
         )
+
+        theme_result = None
+        if not args.skip_theme_sync:
+            theme_repository = ThemeRepository(db_session)
+            theme_service = ThemeManagementService(theme_repository=theme_repository)
+            theme_pipeline = ThemeManagementPipeline(
+                theme_repository=theme_repository,
+                theme_management_service=theme_service,
+            )
+            theme_result = theme_pipeline.run(
+                assignment_limit=args.theme_assignment_limit,
+                assignment_lookback_days=args.theme_assignment_lookback_days,
+                snapshot_lookback_days=args.theme_snapshot_lookback_days,
+                relation_lookback_days=args.theme_relation_lookback_days,
+                run_maintenance=args.theme_run_maintenance,
+                rebuild_centroids=args.theme_rebuild_centroids,
+                record_run=not args.theme_no_record_run,
+            )
     finally:
         db_session.close()
 
@@ -95,6 +160,27 @@ def main() -> None:
         print(f"persistence_error={result['persistence_error']}")
     if result.get("deletion_error"):
         print(f"deletion_error={result['deletion_error']}")
+    if not args.skip_theme_sync and theme_result is not None:
+        print("theme_sync=enabled")
+        print(f"theme_assignment_input_count={theme_result['assignment_input_count']}")
+        print(f"theme_assigned_articles={theme_result['assigned_articles']}")
+        print(f"theme_links_upserted={theme_result['theme_links_upserted']}")
+        print(f"theme_created_themes={theme_result['created_themes']}")
+        print(f"theme_promoted_candidates={theme_result['promoted_candidates']}")
+        print(f"theme_abstained_articles={theme_result.get('abstained_articles', 0)}")
+        print(f"theme_abstained_signals={theme_result.get('abstained_signals', 0)}")
+        print(f"theme_candidate_observations={theme_result.get('candidate_observations', 0)}")
+        print(f"theme_assignment_rate={theme_result.get('assignment_rate', 0.0)}")
+        print(f"theme_abstain_rate={theme_result.get('abstain_rate', 0.0)}")
+        print(f"theme_snapshots_upserted={theme_result['snapshots_upserted']}")
+        print(f"theme_relations_upserted={theme_result['relations_upserted']}")
+        print(f"theme_status_updates={theme_result['status_updates']}")
+        print(f"theme_centroids_rebuilt={theme_result.get('centroids_rebuilt', 0)}")
+        print(f"theme_recommendation_count={theme_result.get('recommendation_count', 0)}")
+        print(f"theme_merge_recommendations={theme_result.get('merge_recommendations', 0)}")
+        print(f"theme_split_recommendations={theme_result.get('split_recommendations', 0)}")
+    else:
+        print("theme_sync=skipped")
 
 
 if __name__ == "__main__":

@@ -117,12 +117,18 @@ class WatchlistThemeArticleResponseItem(BaseModel):
     matched_at: datetime | None = None
 
 
+class ChatHistoryMessage(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1)
+
+
 class ChatAnswerRequest(BaseModel):
     query: str = Field(min_length=1)
     retrieval_limit: int = Field(default=5, ge=1, le=10)
     min_published_at: datetime | None = None
     source_name: str | None = Field(default=None, min_length=1)
     source_names: list[str] | None = None
+    conversation_history: list[ChatHistoryMessage] | None = None
     model: str | None = None
 
 
@@ -460,6 +466,10 @@ def answer_chat(
             retrieval_limit=payload.retrieval_limit,
             min_published_at=payload.min_published_at,
             source_names=normalized_source_names,
+            conversation_history=[
+                {"role": message.role, "content": message.content}
+                for message in (payload.conversation_history or [])
+            ],
             model=payload.model,
         )
     except ValueError as exc:

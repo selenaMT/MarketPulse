@@ -15,8 +15,13 @@ CHAT_SYSTEM_PROMPT = (
     "Answer the user's question using only the provided article context.\n"
     "If the context is insufficient, say so explicitly and avoid unsupported claims.\n"
     "Prefer concise synthesis over repeating the articles.\n"
-    "When referring to evidence, cite the source numbers inline like [1] or [2]."
+    "When referring to evidence, cite the source numbers inline like [1] or [2].\n"
+    "If the user is making small talk or asks about something irrelevant to macro or markets, reply briefly and warmly, "
+    "then gently guide them to browse the linked articles to see whether any topic is relevant to their interest."
 )
+
+MAX_HISTORY_MESSAGES = 6
+MAX_CONTEXT_CHARS = 280
 
 
 class ChatService:
@@ -42,13 +47,19 @@ class ChatService:
         min_published_at: datetime | None = None,
         source_name: str | None = None,
         source_names: list[str] | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
         model: str | None = None,
     ) -> dict[str, Any]:
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("query must be non-empty")
 
-        query_embedding = self._embedding_service.embed([normalized_query])[0]
+        recent_context = self._summarize_recent_context(conversation_history)
+        retrieval_query = self._build_retrieval_query(
+            normalized_query,
+            recent_context=recent_context,
+        )
+        query_embedding = self._embedding_service.embed([retrieval_query])[0]
         articles = self._article_repository.search_similar_for_chat(
             query_embedding=query_embedding,
             limit=retrieval_limit,
@@ -67,7 +78,14 @@ class ChatService:
             model=model or self._default_model,
             input=[
                 {"role": "system", "content": CHAT_SYSTEM_PROMPT},
-                {"role": "user", "content": self._build_user_prompt(normalized_query, articles)},
+                {
+                    "role": "user",
+                    "content": self._build_user_prompt(
+                        normalized_query,
+                        articles,
+                        recent_context=recent_context,
+                    ),
+                },
             ],
         )
 
@@ -77,7 +95,13 @@ class ChatService:
             "model_used": response.model,
         }
 
-    def _build_user_prompt(self, query: str, articles: list[dict[str, Any]]) -> str:
+    def _build_user_prompt(
+        self,
+        query: str,
+        articles: list[dict[str, Any]],
+        *,
+        recent_context: str,
+    ) -> str:
         context_blocks: list[str] = []
         for index, article in enumerate(articles, start=1):
             metadata = article.get("metadata")
@@ -109,7 +133,11 @@ class ChatService:
             )
 
         context_text = "\n\n".join(context_blocks)
-        return f"User question: {query}\n\nArticle context:\n{context_text}"
+        return (
+            f"Recent conversation context:\n{recent_context}\n\n"
+            f"Latest user question: {query}\n\n"
+            f"Article context:\n{context_text}"
+        )
 
     @staticmethod
     def _build_snippet(article: dict[str, Any], max_chars: int = 800) -> str:
@@ -140,6 +168,36 @@ class ChatService:
             elif isinstance(item, str) and item.strip():
                 names.append(item.strip())
         return ", ".join(names)
+
+    @staticmethod
+    def _summarize_recent_context(conversation_history: list[dict[str, str]] | None) -> str:
+        if not conversation_history:
+            return "n/a"
+
+        fragments: list[str] = []
+        for item in conversation_history[-MAX_HISTORY_MESSAGES:]:
+            role = item.get("role", "").strip().lower()
+            content = " ".join(item.get("content", "").split()).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            label = "User asked" if role == "user" else "Assistant answered"
+            fragments.append(f"{label} {content.rstrip('.!?')}.")
+            summary = " ".join(fragments)
+            if len(summary) > MAX_CONTEXT_CHARS:
+                break
+
+        summary = " ".join(fragments).strip()
+        if not summary:
+            return "n/a"
+        if len(summary) <= MAX_CONTEXT_CHARS:
+            return summary
+        return summary[: MAX_CONTEXT_CHARS - 3].rstrip() + "..."
+
+    @staticmethod
+    def _build_retrieval_query(query: str, *, recent_context: str) -> str:
+        if recent_context == "n/a":
+            return query
+        return f"{query}\n\nRecent context: {recent_context}"
 
     @staticmethod
     def _to_source_item(index: int, article: dict[str, Any]) -> dict[str, Any]:

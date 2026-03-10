@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -186,8 +186,14 @@ class ArticleRepository:
         self._session.commit()
         return int(result.rowcount or 0)
 
-    def list_missing_text_processing(self, limit: int) -> list[dict[str, Any]]:
-        """Return candidate rows that do not yet have metadata.text_processing."""
+    def list_missing_text_processing(
+        self,
+        limit: int,
+        include_existing: bool = False,
+        after_created_at: datetime | None = None,
+        after_id: Any | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return candidate rows for text_processing backfill."""
         if limit <= 0:
             return []
 
@@ -200,16 +206,28 @@ class ArticleRepository:
                 Article.description,
                 Article.content,
                 Article.region,
+                Article.created_at,
             )
-            .where(
+            .order_by(Article.created_at.asc(), Article.id.asc())
+            .limit(limit)
+        )
+
+        if not include_existing:
+            query = query.where(
                 or_(
                     metadata_column.is_(None),
                     ~metadata_column.op("?")("text_processing"),
                 )
             )
-            .order_by(Article.created_at.asc(), Article.id.asc())
-            .limit(limit)
-        )
+
+        if after_created_at is not None and after_id is not None:
+            query = query.where(
+                or_(
+                    Article.created_at > after_created_at,
+                    and_(Article.created_at == after_created_at, Article.id > after_id),
+                )
+            )
+
         rows = self._session.execute(query).all()
         return [
             {
@@ -219,11 +237,16 @@ class ArticleRepository:
                 "description": row.description,
                 "content": row.content,
                 "region": row.region,
+                "created_at": row.created_at,
             }
             for row in rows
         ]
 
-    def apply_text_processing_updates(self, updates: list[tuple[Any, dict[str, Any]]]) -> int:
+    def apply_text_processing_updates(
+        self,
+        updates: list[tuple[Any, dict[str, Any]]],
+        replace_metadata: bool = False,
+    ) -> int:
         """Persist text_processing payload to metadata and set region from payload."""
         if not updates:
             return 0
@@ -234,8 +257,11 @@ class ArticleRepository:
             if article is None:
                 continue
 
-            metadata = dict(article.metadata_json or {})
-            metadata["text_processing"] = payload
+            if replace_metadata:
+                metadata = {"text_processing": payload}
+            else:
+                metadata = dict(article.metadata_json or {})
+                metadata["text_processing"] = payload
             article.metadata_json = metadata
             region = self._to_optional_str(payload.get("region"))
             article.region = region

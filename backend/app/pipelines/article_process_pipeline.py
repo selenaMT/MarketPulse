@@ -71,14 +71,16 @@ class ArticleProcessingPipeline:
         # Run unified structured extraction.
         structured_data = self._text_processing_service.process(text)
         entities = self._extract_entity_names(structured_data)
-        macro_signals = self._extract_macro_signals(structured_data)
+        narratives = self._extract_narratives(structured_data)
+        impact = self._extract_impact(structured_data)
 
         # Update metadata
         metadata = dict(article.metadata_json or {})
         metadata.update({
             "text_processing": structured_data,
             "entities": entities,
-            "macro_signals": macro_signals,
+            "narratives": narratives,
+            "impact": impact,
             "processed": True,
         })
 
@@ -116,8 +118,19 @@ class ArticleProcessingPipeline:
         return names
 
     @staticmethod
-    def _extract_macro_signals(structured_data: dict[str, Any]) -> list[str]:
-        signals = structured_data.get("macro_signals")
-        if not isinstance(signals, list):
+    def _extract_narratives(structured_data: dict[str, Any]) -> list[str]:
+        narratives = structured_data.get("narratives")
+        if not isinstance(narratives, list):
+            narratives = structured_data.get("macro_signals")
+        if not isinstance(narratives, list):
             return []
-        return [signal.strip() for signal in signals if isinstance(signal, str) and signal.strip()]
+        return [narrative.strip() for narrative in narratives if isinstance(narrative, str) and narrative.strip()]
+
+    @staticmethod
+    def _extract_impact(structured_data: dict[str, Any]) -> int | None:
+        impact = structured_data.get("impact")
+        if not isinstance(impact, int):
+            return None
+        if 0 <= impact <= 100:
+            return impact
+        return None

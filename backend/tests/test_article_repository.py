@@ -60,7 +60,8 @@ def test_to_row_stores_text_processing_in_metadata():
                 "entities": [],
                 "region": "US",
                 "market_tone": "neutral",
-                "macro_signals": [],
+                "narratives": [],
+                "impact": 66,
                 "asset_impacts": [],
                 "relationships": [],
                 "keep": True,
@@ -69,4 +70,5 @@ def test_to_row_stores_text_processing_in_metadata():
     )
 
     assert row["metadata"]["text_processing"]["region"] == "US"
+    assert row["metadata"]["text_processing"]["impact"] == 66
     assert row["region"] == "US"

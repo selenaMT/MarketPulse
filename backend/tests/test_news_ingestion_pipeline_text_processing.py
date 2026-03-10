@@ -21,7 +21,8 @@ class FakeTextProcessingService:
             "entities": [{"name": "US CPI", "type": "economic_indicator"}],
             "region": "US",
             "market_tone": "hawkish",
-            "macro_signals": ["Inflation surprise"],
+            "narratives": ["Inflation surprise"],
+            "impact": 79,
             "asset_impacts": [{"asset": "US Treasuries", "direction": "down", "confidence": 1}],
             "relationships": [{"source": "US CPI", "relation": "increases", "target": "rate hike expectations"}],
             "keep": True,
@@ -69,6 +70,7 @@ def test_pipeline_enriches_articles_with_text_processing_and_embedding():
     assert repository.received is not None
     assert repository.received[0]["embedding"] == [1.0, 0.1]
     assert repository.received[0]["text_processing"]["market_tone"] == "hawkish"
+    assert repository.received[0]["text_processing"]["impact"] == 79
     assert result["articles"][0]["text_processing"]["keep"] is True
 
 
@@ -111,7 +113,8 @@ def test_pipeline_filters_out_keep_false_and_deletes_existing_row():
                 "entities": [],
                 "region": "Global",
                 "market_tone": "neutral",
-                "macro_signals": [],
+                "narratives": [],
+                "impact": 3,
                 "asset_impacts": [],
                 "relationships": [],
                 "keep": False,
@@ -158,7 +161,8 @@ def test_pipeline_retries_failed_text_processing_once():
                 "entities": [],
                 "region": "US",
                 "market_tone": "neutral",
-                "macro_signals": [],
+                "narratives": [],
+                "impact": 48,
                 "asset_impacts": [],
                 "relationships": [],
                 "keep": True,

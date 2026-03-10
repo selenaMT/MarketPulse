@@ -105,12 +105,28 @@ TEXT_PROCESSING_SCHEMA = {
                 ),
                 "enum": MARKET_TONE_VOCAB,
             },
-            "macro_signals": {
+            "narratives": {
                 "type": "array",
-                "description": "Top 3-5 macroeconomic themes implied by the article.",
+                "description": "Top 3-5 macroeconomic/financial/business themes implied by the article.",
                 "items": {
                     "type": "string",
                 },
+            },
+            "impact": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": (
+                    "Estimated significance of the article for financial, economic, business, market, "
+                    "or investment matters, from 0 for negligible significance to 100 for globally or "
+                    "systemically important significance.\n"
+                    "Simple anchors:\n"
+                    "0-20: little or no broader economic/market significance\n"
+                    "21-40: modest, niche, or mostly local relevance\n"
+                    "41-60: meaningful regional or sector importance\n"
+                    "61-80: major regional / national significance with broad market relevance\n"
+                    "81-100: globally important or systemically important event"
+                ),
             },
             "asset_impacts": {
                 "type": "array",
@@ -177,7 +193,8 @@ TEXT_PROCESSING_SCHEMA = {
             "entities",
             "region",
             "market_tone",
-            "macro_signals",
+            "narratives",
+            "impact",
             "asset_impacts",
             "relationships",
             "keep",
@@ -189,29 +206,28 @@ TEXT_PROCESSING_SCHEMA = {
     },
 }
 
-_MARKET_TONE_VOCAB_TEXT = ", ".join(MARKET_TONE_VOCAB)
-_ASSET_DIRECTION_VOCAB_TEXT = ", ".join(ASSET_IMPACT_DIRECTION_VOCAB)
-
 SYSTEM_PROMPT = (
     "You extract essential macro/financial information from news articles.\n"
     "Follow these rules strictly:\n"
     "- Return ONLY valid JSON matching the provided schema.\n"
     "- Do not use markdown.\n"
+    "- Do not invent information not implied by the article.\n"
+    "- If uncertain, prefer empty lists over guessing.\n"
+    "- In fields where you should output a list, output only relevant items and keep it within reasonable length.\n"
+
     "- Keep event factual, concise, ideally under 15 words.\n"
-    f"- market_tone allowed values: {_MARKET_TONE_VOCAB_TEXT}.\n"
     "- If there is no clear policy implication, use market_tone='uncertain'.\n"
-    "- If multiple descriptions are suitable for market_tone, choose the most appropriaten and most informative one.\n"
-    "- macro_signals should contain 3-5 themes/narratives when possible.\n"
-    "- If uncertain, macro_signals can be an empty list.\n"
-    f"- asset_impacts.direction allowed values: {_ASSET_DIRECTION_VOCAB_TEXT}.\n"
+    "- If multiple descriptions are suitable for market_tone, choose the most appropriate and most informative one.\n"
+    "- narratives should contain 3-5 themes/narratives when possible. Be specific with the themes. For example, instead of saying 'fiscal policy', specify 'US raising interest rates due to recent inflation'.\n"
+    "- If uncertain, narratives can be an empty list.\n"
+    "- impact is a single integer from 0 to 100 measuring how significant the article is for financial, economic, business, market, or investment matters.\n"
+    "- Score higher for major policies, major economies, systemically important companies, large cross-border events, or developments likely to influence broad markets.\n"
+    "- Score lower for niche, local, isolated, or low-stakes developments with limited broader consequences.\n"
+    "- Use the likely real-world significance, not the dramatic tone of the headline.\n"
     "- keep=true is when the article is relevant to business, governmental, political, economic, financial, geopolitical, legal, market, and investment. Otherwise, keep=false. Be lenient: keep should be false when you are really sure the article is irrelevant to a economics & finance tracker app.\n"
     "- If keep=false, still return valid JSON. Keep other properties empty if you want to, but keep event concise.\n"
-    "- If uncertain, prefer empty lists over guessing.\n"
-    "- Do not invent information not implied by the article.\n"
-    "- reasoning_1, reasoning_2, reasoning_3 are required keys.\n"
-    "- Set reasoning_1/reasoning_2/reasoning_3 to null when extra reasoning is not needed.\n"
+    "- reasoning_1, reasoning_2, reasoning_3 are required keys. But set any of them reasoning_1/reasoning_2/reasoning_3 to null when extra reasoning is not needed.\n"
     "- Only populate a reasoning field with a short string when it adds more quality to analysis and output.\n"
-    "- In fields where you should output a list, output only relevant items and keep it within reasonable length.\n"
 )
 
 

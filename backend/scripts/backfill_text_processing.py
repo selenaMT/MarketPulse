@@ -41,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=None, help="Optional OpenAI model override.")
     parser.add_argument("--dry-run", action="store_true", help="Compute only; do not update/delete DB rows.")
     parser.add_argument(
+        "--replace-metadata",
+        action="store_true",
+        help="Reprocess all articles and replace metadata with only text_processing payload.",
+    )
+    parser.add_argument(
         "--print-failures",
         type=int,
         default=10,
@@ -116,12 +121,13 @@ def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env")
     args = parse_args()
     logger.info(
-        "Starting backfill: batch_size=%s workers=%s limit=%s model=%s dry_run=%s",
+        "Starting backfill: batch_size=%s workers=%s limit=%s model=%s dry_run=%s replace_metadata=%s",
         args.batch_size,
         args.workers,
         args.limit,
         args.model or "default",
         args.dry_run,
+        args.replace_metadata,
     )
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -140,6 +146,8 @@ def main() -> None:
     seen_failed_ids: set[Any] = set()
     failed_reason_counter: Counter[str] = Counter()
     failed_samples: list[tuple[Any, str]] = []
+    cursor_created_at = None
+    cursor_article_id = None
 
     try:
         if args.dry_run:
@@ -157,10 +165,20 @@ def main() -> None:
             fetch_size = min(args.batch_size, remaining) if args.limit > 0 else args.batch_size
             batch_number += 1
             logger.info("Batch %s: fetching candidates (fetch_size=%s)", batch_number, fetch_size)
-            candidates = repository.list_missing_text_processing(limit=fetch_size)
+            candidates = repository.list_missing_text_processing(
+                limit=fetch_size,
+                include_existing=args.replace_metadata,
+                after_created_at=cursor_created_at,
+                after_id=cursor_article_id,
+            )
             if not candidates:
                 logger.info("Batch %s: no more candidates, stopping.", batch_number)
                 break
+
+            if args.replace_metadata:
+                last_row = candidates[-1]
+                cursor_created_at = last_row.get("created_at")
+                cursor_article_id = last_row.get("article_id")
 
             pending = [row for row in candidates if row["article_id"] not in seen_failed_ids]
             if not pending:
@@ -199,7 +217,10 @@ def main() -> None:
             seen_failed_ids.update(final_failed_ids)
 
             if not args.dry_run:
-                updated_total += repository.apply_text_processing_updates(merged_successes)
+                updated_total += repository.apply_text_processing_updates(
+                    merged_successes,
+                    replace_metadata=args.replace_metadata,
+                )
                 deleted_total += repository.delete_by_ids(merged_keep_false_ids)
             else:
                 updated_total += len(merged_successes)

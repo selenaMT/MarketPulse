@@ -7,6 +7,37 @@ import os
 
 from openai import OpenAI
 
+MARKET_TONE_VOCAB = [
+    "hawkish",
+    "dovish",
+
+    "risk_on",
+    "risk_off",
+
+    "inflation_up",
+    "inflation_down",
+
+    "growth_up",
+    "growth_down",
+
+    "liquidity_up",
+    "liquidity_down",
+
+    "uncertain",
+    "neutral",
+]
+
+ASSET_IMPACT_DIRECTION_VOCAB = [
+    "up",
+    "down",
+    "flat",
+    "volatile",
+    "steepen",
+    "widen",
+    "tighten",
+    "uncertain",
+]
+
 TEXT_PROCESSING_SCHEMA = {
     "type": "json_schema",
     "name": "marketpulse_text_processing",
@@ -14,6 +45,11 @@ TEXT_PROCESSING_SCHEMA = {
     "schema": {
         "type": "object",
         "properties": {
+            "reasoning_1": {
+                "type": ["string", "null"],
+                "description": "Optional extra reasoning field; use null when not needed.",
+            },
+
             "event": {
                 "type": "string",
                 "description": (
@@ -39,6 +75,7 @@ TEXT_PROCESSING_SCHEMA = {
                                 "country",
                                 "economic_indicator",
                                 "economic_concept",
+                                "business_concept",
                                 "company",
                                 "financial_asset",
                                 "economic_asset",
@@ -57,11 +94,23 @@ TEXT_PROCESSING_SCHEMA = {
                 "type": "string",
                 "description": "Primary geographic scope of the event.",
             },
-            "policy_signal": {
+            "reasoning_2": {
+                "type": ["string", "null"],
+                "description": "Optional extra reasoning field; use null when not needed.",
+            },
+            "market_tone": {
                 "type": "string",
                 "description": (
-                    "Free-form macro policy or market tone implied by the article. "
+                    "Macro policy or market tone category implied by the article."
                 ),
+                "enum": MARKET_TONE_VOCAB,
+            },
+            "macro_signals": {
+                "type": "array",
+                "description": "Top 3-5 macroeconomic themes implied by the article.",
+                "items": {
+                    "type": "string",
+                },
             },
             "asset_impacts": {
                 "type": "array",
@@ -79,6 +128,7 @@ TEXT_PROCESSING_SCHEMA = {
                         "direction": {
                             "type": "string",
                             "description": "Expected market direction for the asset.",
+                            "enum": ASSET_IMPACT_DIRECTION_VOCAB,
                         },
                         "confidence": {
                             "type": "integer",
@@ -117,14 +167,6 @@ TEXT_PROCESSING_SCHEMA = {
                     "geopolitical, or corporate economic developments."
                 ),
             },
-            "reasoning_1": {
-                "type": ["string", "null"],
-                "description": "Optional extra reasoning field; use null when not needed.",
-            },
-            "reasoning_2": {
-                "type": ["string", "null"],
-                "description": "Optional extra reasoning field; use null when not needed.",
-            },
             "reasoning_3": {
                 "type": ["string", "null"],
                 "description": "Optional extra reasoning field; use null when not needed.",
@@ -134,7 +176,8 @@ TEXT_PROCESSING_SCHEMA = {
             "event",
             "entities",
             "region",
-            "policy_signal",
+            "market_tone",
+            "macro_signals",
             "asset_impacts",
             "relationships",
             "keep",
@@ -146,13 +189,21 @@ TEXT_PROCESSING_SCHEMA = {
     },
 }
 
+_MARKET_TONE_VOCAB_TEXT = ", ".join(MARKET_TONE_VOCAB)
+_ASSET_DIRECTION_VOCAB_TEXT = ", ".join(ASSET_IMPACT_DIRECTION_VOCAB)
+
 SYSTEM_PROMPT = (
     "You extract essential macro/financial information from news articles.\n"
     "Follow these rules strictly:\n"
     "- Return ONLY valid JSON matching the provided schema.\n"
     "- Do not use markdown.\n"
     "- Keep event factual, concise, ideally under 15 words.\n"
-    "- If there is no clear policy implication, use neutral wording.\n"
+    f"- market_tone allowed values: {_MARKET_TONE_VOCAB_TEXT}.\n"
+    "- If there is no clear policy implication, use market_tone='uncertain'.\n"
+    "- If multiple descriptions are suitable for market_tone, choose the most appropriaten and most informative one.\n"
+    "- macro_signals should contain 3-5 themes/narratives when possible.\n"
+    "- If uncertain, macro_signals can be an empty list.\n"
+    f"- asset_impacts.direction allowed values: {_ASSET_DIRECTION_VOCAB_TEXT}.\n"
     "- keep=true is when the article is relevant to business, governmental, political, economic, financial, geopolitical, legal, market, and investment. Otherwise, keep=false. Be lenient: keep should be false when you are really sure the article is irrelevant to a economics & finance tracker app.\n"
     "- If keep=false, still return valid JSON. Keep other properties empty if you want to, but keep event concise.\n"
     "- If uncertain, prefer empty lists over guessing.\n"
@@ -160,8 +211,7 @@ SYSTEM_PROMPT = (
     "- reasoning_1, reasoning_2, reasoning_3 are required keys.\n"
     "- Set reasoning_1/reasoning_2/reasoning_3 to null when extra reasoning is not needed.\n"
     "- Only populate a reasoning field with a short string when it adds more quality to analysis and output.\n"
-    "- For example, if you use reasoning_1 only, set reasoning_2 and reasoning_3 to null.\n"
-    "- In fields where you should output a list, output only relevant items and keep it within reasonable length."
+    "- In fields where you should output a list, output only relevant items and keep it within reasonable length.\n"
 )
 
 
@@ -171,7 +221,7 @@ class TextProcessingService:
     def __init__(
         self,
         api_key: str | None = None,
-        default_model: str = "gpt-5",
+        default_model: str = "gpt-4o-mini",
         invalid_json_retries: int = 2,
         client: OpenAI | None = None,
     ) -> None:

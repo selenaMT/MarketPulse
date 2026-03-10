@@ -32,7 +32,7 @@ def test_init_raises_without_api_key_and_without_client(monkeypatch):
 
 
 def test_process_uses_default_model_and_returns_dict():
-    payload = '{"event":"US CPI rose higher than expected","entities":[],"region":"US","policy_signal":"hawkish","asset_impacts":[],"relationships":[],"keep":true}'
+    payload = '{"event":"US CPI rose higher than expected","entities":[],"region":"US","market_tone":"hawkish","macro_signals":["Inflation surprise"],"asset_impacts":[],"relationships":[],"keep":true}'
     fake_client = FakeClient(SimpleNamespace(output_text=payload))
     service = TextProcessingService(client=fake_client, default_model="model-default")
 
@@ -44,18 +44,18 @@ def test_process_uses_default_model_and_returns_dict():
 
 
 def test_process_allows_model_override():
-    payload = '{"event":"Fed signals possible rate cuts","entities":[],"region":"US","policy_signal":"dovish","asset_impacts":[],"relationships":[],"keep":true}'
+    payload = '{"event":"Fed signals possible rate cuts","entities":[],"region":"US","market_tone":"dovish","macro_signals":["Policy easing expectations"],"asset_impacts":[],"relationships":[],"keep":true}'
     fake_client = FakeClient(SimpleNamespace(output_text=payload))
     service = TextProcessingService(client=fake_client, default_model="model-default")
 
     result = service.process("Some text", model="model-override")
 
     assert fake_client.responses.last_call["model"] == "model-override"
-    assert result["policy_signal"] == "dovish"
+    assert result["market_tone"] == "dovish"
 
 
 def test_process_raises_on_blank_text():
-    payload = '{"event":"","entities":[],"region":"Global","policy_signal":"neutral","asset_impacts":[],"relationships":[],"keep":false}'
+    payload = '{"event":"","entities":[],"region":"Global","market_tone":"neutral","macro_signals":[],"asset_impacts":[],"relationships":[],"keep":false}'
     fake_client = FakeClient(SimpleNamespace(output_text=payload))
     service = TextProcessingService(client=fake_client)
 
@@ -66,7 +66,7 @@ def test_process_raises_on_blank_text():
 def test_process_retries_invalid_json_and_succeeds():
     invalid = SimpleNamespace(output_text="{not-json")
     valid = SimpleNamespace(
-        output_text='{"event":"Fed update","entities":[],"region":"US","policy_signal":"neutral","asset_impacts":[],"relationships":[],"keep":true}'
+        output_text='{"event":"Fed update","entities":[],"region":"US","market_tone":"neutral","macro_signals":[],"asset_impacts":[],"relationships":[],"keep":true}'
     )
     fake_client = FakeClient([invalid, valid])
     service = TextProcessingService(client=fake_client, invalid_json_retries=2)

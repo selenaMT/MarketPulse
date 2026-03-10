@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -71,7 +71,10 @@ class ArticleRepository:
     def get_unprocessed_articles(self, limit: int = 100) -> list[Article]:
         """Get articles that haven't been processed yet (no 'processed' in metadata)."""
         return self._session.query(Article).filter(
-            ~Article.metadata_json.contains({"processed": True})
+            or_(
+                Article.metadata_json.is_(None),
+                ~Article.metadata_json.contains({"processed": True}),
+            )
         ).limit(limit).all()
 
     def update_article_metadata(self, article_id: str, metadata: dict) -> None:
@@ -198,7 +201,12 @@ class ArticleRepository:
                 Article.content,
                 Article.region,
             )
-            .where(~metadata_column.op("?")("text_processing"))
+            .where(
+                or_(
+                    metadata_column.is_(None),
+                    ~metadata_column.op("?")("text_processing"),
+                )
+            )
             .order_by(Article.created_at.asc(), Article.id.asc())
             .limit(limit)
         )

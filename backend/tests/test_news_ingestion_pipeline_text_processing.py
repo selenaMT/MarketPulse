@@ -20,7 +20,8 @@ class FakeTextProcessingService:
             "event": "US CPI rose higher than expected",
             "entities": [{"name": "US CPI", "type": "economic_indicator"}],
             "region": "US",
-            "policy_signal": "hawkish",
+            "market_tone": "hawkish",
+            "macro_signals": ["Inflation surprise"],
             "asset_impacts": [{"asset": "US Treasuries", "direction": "down", "confidence": 1}],
             "relationships": [{"source": "US CPI", "relation": "increases", "target": "rate hike expectations"}],
             "keep": True,
@@ -67,7 +68,7 @@ def test_pipeline_enriches_articles_with_text_processing_and_embedding():
     assert result["text_processing_errors_count"] == 0
     assert repository.received is not None
     assert repository.received[0]["embedding"] == [1.0, 0.1]
-    assert repository.received[0]["text_processing"]["policy_signal"] == "hawkish"
+    assert repository.received[0]["text_processing"]["market_tone"] == "hawkish"
     assert result["articles"][0]["text_processing"]["keep"] is True
 
 
@@ -109,7 +110,8 @@ def test_pipeline_filters_out_keep_false_and_deletes_existing_row():
                 "event": "Non-relevant article",
                 "entities": [],
                 "region": "Global",
-                "policy_signal": "neutral",
+                "market_tone": "neutral",
+                "macro_signals": [],
                 "asset_impacts": [],
                 "relationships": [],
                 "keep": False,
@@ -155,7 +157,8 @@ def test_pipeline_retries_failed_text_processing_once():
                 "event": "Retry succeeded",
                 "entities": [],
                 "region": "US",
-                "policy_signal": "neutral",
+                "market_tone": "neutral",
+                "macro_signals": [],
                 "asset_impacts": [],
                 "relationships": [],
                 "keep": True,

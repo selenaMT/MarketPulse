@@ -49,9 +49,10 @@ def main() -> None:
     # Import app modules after environment is set up
     try:
         from app.db.session import SessionLocal
-        from app.pipelines.article_processing_pipeline import ArticleProcessingPipeline
+        from app.pipelines.article_process_pipeline import ArticleProcessingPipeline
         from app.repositories.article_repository import ArticleRepository
         from app.services.embedding_service import EmbeddingService
+        from app.services.text_processing_service import TextProcessingService
     except ImportError as e:
         logger.error(f"Failed to import app modules: {e}")
         return
@@ -60,6 +61,7 @@ def main() -> None:
     try:
         logger.info("Initializing services...")
         embedding_service = EmbeddingService()
+        text_processing_service = TextProcessingService()
         
         logger.info("Connecting to database...")
         db_session = SessionLocal()
@@ -69,6 +71,7 @@ def main() -> None:
         pipeline = ArticleProcessingPipeline(
             embedding_service=embedding_service,
             article_repository=article_repository,
+            text_processing_service=text_processing_service,
         )
         
         logger.info(f"Running pipeline with limit={args.limit}...")

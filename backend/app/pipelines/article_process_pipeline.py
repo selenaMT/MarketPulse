@@ -1,4 +1,4 @@
-"""Article processing pipeline: enrich articles with embeddings, entities, and macro signals."""
+"""Article processing pipeline: enrich stored articles with embeddings and text-processing output."""
 from __future__ import annotations
 
 import sys
@@ -13,14 +13,10 @@ _backend_root = _current_dir.parents[1]
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-from sqlalchemy import cast
-from sqlalchemy.dialects.postgresql import JSONB
-
-from openai import OpenAI
-
 from app.models.article import Article
 from app.repositories.article_repository import ArticleRepository
 from app.services.embedding_service import EmbeddingService
+from app.services.text_processing_service import TextProcessingService
 
 
 class ArticleProcessingPipeline:
@@ -30,19 +26,17 @@ class ArticleProcessingPipeline:
         self,
         embedding_service: EmbeddingService,
         article_repository: ArticleRepository,
-        openai_client: OpenAI | None = None,
+        text_processing_service: TextProcessingService | None = None,
     ) -> None:
         self._embedding_service = embedding_service
         self._article_repository = article_repository
         self._session = article_repository._session
-        self._openai_client = openai_client or OpenAI()
+        self._text_processing_service = text_processing_service or TextProcessingService()
 
     def run(self, limit: int = 100) -> dict[str, Any]:
         """Run the article processing pipeline."""
-        # Get articles that haven't been processed yet
-        unprocessed_articles = self._session.query(Article).filter(
-            ~Article.metadata_json.op('@>')(cast({"processed": True}, JSONB))
-        ).limit(limit).all()
+        # Get articles that haven't been processed yet.
+        unprocessed_articles = self._article_repository.get_unprocessed_articles(limit=limit)
 
         processed_count = 0
         errors: list[str] = []
@@ -60,10 +54,12 @@ class ArticleProcessingPipeline:
             "errors": errors,
         }
 
-    def _process_article(self, article):
+    def _process_article(self, article: Article) -> None:
         """Process a single article."""
         # Combine text
         text = self._combine_text(article)
+        if not text:
+            return
 
         # Generate embedding if not present
         if article.embedding is None:
@@ -72,20 +68,20 @@ class ArticleProcessingPipeline:
             article.embedding_model = "text-embedding-3-small"
             article.embedded_at = datetime.utcnow()
 
-        # Extract entities using LLM
-        entities = self._extract_entities(text)
-
-        # Extract macro signals using LLM
-        signals = self._extract_macro_signals(text)
+        # Run unified structured extraction.
+        structured_data = self._text_processing_service.process(text)
+        entities = self._extract_entity_names(structured_data)
+        macro_signals = self._extract_macro_signals(structured_data)
 
         # Update metadata
-        metadata = article.metadata_json.copy()
+        metadata = dict(article.metadata_json or {})
         metadata.update({
+            "text_processing": structured_data,
             "entities": entities,
-            "macro_signals": signals,
+            "macro_signals": macro_signals,
             "processed": True,
         })
-        
+
         # Update the article in the database
         self._session.query(Article).filter(Article.id == article.id).update(
             {"metadata_json": metadata}
@@ -103,48 +99,25 @@ class ArticleProcessingPipeline:
             parts.append(article.content)
         return " ".join(parts)
 
-    def _extract_macro_signals(self, text: str) -> list[str]:
-        """Extract macroeconomic signals from text using LLM."""
-        prompt = f"""
-        Analyze the following news article text and extract key macroeconomic signals or themes.
-        Provide a list of 3-5 key signals/themes in bullet points.
+    @staticmethod
+    def _extract_entity_names(structured_data: dict[str, Any]) -> list[str]:
+        entities = structured_data.get("entities")
+        if not isinstance(entities, list):
+            return []
 
-        Text: {text[:2000]}  # Limit text length
+        names: list[str] = []
+        for entity in entities:
+            if isinstance(entity, dict):
+                name = entity.get("name")
+                if isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+            elif isinstance(entity, str) and entity.strip():
+                names.append(entity.strip())
+        return names
 
-        Signals:
-        """
-        try:
-            response = self._openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-            )
-            signals_text = response.choices[0].message.content.strip()
-            # Parse bullet points
-            signals = [line.strip("- ").strip() for line in signals_text.split("\n") if line.strip().startswith("-")]
-            return signals[:5]  # Limit to 5
-        except Exception as e:
-            return [f"Error extracting signals: {str(e)}"]
-
-    def _extract_entities(self, text: str) -> list[str]:
-        """Extract key entities from text using LLM."""
-        prompt = f"""
-        Analyze the following news article text and extract key entities (people, organizations, locations, etc.).
-        Provide a list of 3-7 key entities in bullet points.
-
-        Text: {text[:2000]}  # Limit text length
-
-        Entities:
-        """
-        try:
-            response = self._openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-            )
-            entities_text = response.choices[0].message.content.strip()
-            # Parse bullet points
-            entities = [line.strip("- ").strip() for line in entities_text.split("\n") if line.strip().startswith("-")]
-            return entities[:7]  # Limit to 7
-        except Exception as e:
-            return [f"Error extracting entities: {str(e)}"]
+    @staticmethod
+    def _extract_macro_signals(structured_data: dict[str, Any]) -> list[str]:
+        signals = structured_data.get("macro_signals")
+        if not isinstance(signals, list):
+            return []
+        return [signal.strip() for signal in signals if isinstance(signal, str) and signal.strip()]

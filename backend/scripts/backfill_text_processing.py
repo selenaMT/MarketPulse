@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,15 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.db.session import SessionLocal
 from app.repositories.article_repository import ArticleRepository
 from app.services.text_processing_service import TextProcessingService
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
+logger = logging.getLogger("backfill_text_processing")
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,6 +115,14 @@ def process_batch(
 def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env")
     args = parse_args()
+    logger.info(
+        "Starting backfill: batch_size=%s workers=%s limit=%s model=%s dry_run=%s",
+        args.batch_size,
+        args.workers,
+        args.limit,
+        args.model or "default",
+        args.dry_run,
+    )
 
     if not os.getenv("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY not found in environment variables")
@@ -125,22 +143,30 @@ def main() -> None:
 
     try:
         if args.dry_run:
-            print("dry_run=true (DB writes/deletes disabled)")
+            logger.info("dry_run=true (DB writes/deletes disabled)")
         else:
             region_backfilled = repository.backfill_region_from_metadata()
+            logger.info("Initial region backfill complete: updated=%s", region_backfilled)
 
+        batch_number = 0
         while True:
             remaining = args.limit - processed_total if args.limit > 0 else args.batch_size
             if args.limit > 0 and remaining <= 0:
+                logger.info("Reached limit=%s, stopping.", args.limit)
                 break
             fetch_size = min(args.batch_size, remaining) if args.limit > 0 else args.batch_size
+            batch_number += 1
+            logger.info("Batch %s: fetching candidates (fetch_size=%s)", batch_number, fetch_size)
             candidates = repository.list_missing_text_processing(limit=fetch_size)
             if not candidates:
+                logger.info("Batch %s: no more candidates, stopping.", batch_number)
                 break
 
             pending = [row for row in candidates if row["article_id"] not in seen_failed_ids]
             if not pending:
+                logger.info("Batch %s: all candidates are previously failed IDs, stopping.", batch_number)
                 break
+            logger.info("Batch %s: processing pending=%s", batch_number, len(pending))
 
             successes, keep_false_ids, failed_ids, failed_details = process_batch(
                 service=service,
@@ -157,6 +183,7 @@ def main() -> None:
             retry_keep_false_ids: list[Any] = []
             final_failed_ids: list[Any] = []
             if retry_articles:
+                logger.info("Batch %s: retrying failed items count=%s", batch_number, len(retry_articles))
                 retry_successes, retry_keep_false_ids, final_failed_ids, retry_failed_details = process_batch(
                     service=service,
                     articles=retry_articles,
@@ -180,30 +207,33 @@ def main() -> None:
 
             processed_total += len(pending)
 
-            print(
-                "batch_processed="
-                f"{len(pending)} updated={len(merged_successes)} deleted_keep_false={len(merged_keep_false_ids)} "
-                f"failed_after_retry={len(final_failed_ids)}"
+            logger.info(
+                "Batch %s summary: processed=%s updated=%s deleted_keep_false=%s failed_after_retry=%s",
+                batch_number,
+                len(pending),
+                len(merged_successes),
+                len(merged_keep_false_ids),
+                len(final_failed_ids),
             )
 
     finally:
         db_session.close()
 
-    print("Backfill summary:")
-    print(f"region_backfilled_from_metadata={region_backfilled}")
-    print(f"processed_total={processed_total}")
-    print(f"updated_total={updated_total}")
-    print(f"deleted_keep_false_total={deleted_total}")
-    print(f"retried_total={retried_total}")
-    print(f"failed_after_retry_total={failed_total}")
+    logger.info("Backfill summary:")
+    logger.info("region_backfilled_from_metadata=%s", region_backfilled)
+    logger.info("processed_total=%s", processed_total)
+    logger.info("updated_total=%s", updated_total)
+    logger.info("deleted_keep_false_total=%s", deleted_total)
+    logger.info("retried_total=%s", retried_total)
+    logger.info("failed_after_retry_total=%s", failed_total)
     if failed_reason_counter:
-        print("failed_reasons:")
+        logger.warning("failed_reasons:")
         for reason, count in failed_reason_counter.most_common():
-            print(f"  {count}x {reason}")
+            logger.warning("  %sx %s", count, reason)
     if args.print_failures > 0 and failed_samples:
-        print("failed_samples:")
+        logger.warning("failed_samples:")
         for article_id, reason in failed_samples[: args.print_failures]:
-            print(f"  article_id={article_id} reason={reason}")
+            logger.warning("  article_id=%s reason=%s", article_id, reason)
 
 
 if __name__ == "__main__":

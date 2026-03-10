@@ -36,8 +36,8 @@ class Article(Base):
         Text, nullable=True, server_default="text-embedding-3-small"
     )
     embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    metadata_json: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSON, nullable=False, default=dict, server_default="{}"
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(
+        "metadata", JSON, nullable=True
     )
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

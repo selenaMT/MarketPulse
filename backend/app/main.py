@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import datetime
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,10 +15,13 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.theme_repository import ThemeRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.watchlist_repository import WatchlistRepository
 from app.services.article_search_service import ArticleSearchService
 from app.services.chat_service import ChatService
 from app.services.embedding_service import EmbeddingService
+from app.services.watchlist_service import WatchlistService
 from app.utils.auth import (
     Token,
     create_access_token,
@@ -51,6 +55,66 @@ class SemanticSearchResponseItem(BaseModel):
 class SourceOptionResponseItem(BaseModel):
     source_name: str
     article_count: int = Field(ge=1)
+
+
+class HotThemeResponseItem(BaseModel):
+    id: str
+    slug: str
+    canonical_label: str
+    status: str
+    article_count: int = Field(ge=1)
+    last_seen_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WatchlistThemeResponseItem(BaseModel):
+    id: str
+    slug: str
+    canonical_label: str
+    summary: str | None = None
+    status: str
+    discovery_method: str
+    scope: str
+    owner_user_id: str | None = None
+    article_count: int = Field(ge=0)
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    alerts_enabled: bool | None = None
+    watchlisted_at: datetime | None = None
+
+
+class WatchlistThemeCreateRequest(BaseModel):
+    theme_id: str | None = None
+    canonical_label: str | None = None
+    description: str | None = None
+    alerts_enabled: bool = True
+    backfill_min_similarity: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class WatchlistThemeCreateResponse(BaseModel):
+    created_new_theme: bool
+    watchlist_link_created: bool
+    theme: WatchlistThemeResponseItem
+    backfill_source_themes_count: int = Field(ge=0)
+    backfill_source_candidates_count: int = Field(ge=0)
+    backfill_inherited_from_themes: int = Field(ge=0)
+    backfill_inherited_from_candidates: int = Field(ge=0)
+    snapshot_created: bool
+
+
+class WatchlistThemeArticleResponseItem(BaseModel):
+    article_id: str
+    canonical_url: str
+    title: str | None = None
+    description: str | None = None
+    published_at: datetime | None = None
+    source_name: str
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    assignment_score: float = Field(ge=0.0, le=1.0)
+    assignment_method: str
+    matched_at: datetime | None = None
 
 
 class ChatAnswerRequest(BaseModel):
@@ -191,6 +255,152 @@ def list_article_sources(session: Session = Depends(get_db_session)) -> list[Sou
     ]
 
 
+@app.get("/themes/hot", response_model=list[HotThemeResponseItem])
+def list_hot_themes(
+    limit: int = Query(10, ge=1, le=50),
+    session: Session = Depends(get_db_session),
+) -> list[HotThemeResponseItem]:
+    theme_repository = ThemeRepository(session)
+    rows = theme_repository.list_hot_themes(limit=limit)
+    return [
+        HotThemeResponseItem(
+            id=str(row["id"]),
+            slug=str(row["slug"]),
+            canonical_label=str(row["canonical_label"]),
+            status=str(row["status"]),
+            article_count=int(row["article_count"]),
+            last_seen_at=row.get("last_seen_at"),
+            updated_at=row.get("updated_at"),
+        )
+        for row in rows
+    ]
+
+
+@app.get("/watchlist/themes", response_model=list[WatchlistThemeResponseItem])
+def list_watchlist_themes(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> list[WatchlistThemeResponseItem]:
+    watchlist_service = WatchlistService(
+        embedding_service=None,
+        watchlist_repository=WatchlistRepository(session),
+        theme_repository=ThemeRepository(session),
+    )
+    rows = watchlist_service.list_watchlist_themes(user_id=current_user.id, limit=limit)
+    return [_to_watchlist_theme_response_item(row) for row in rows]
+
+
+@app.post("/watchlist/themes", response_model=WatchlistThemeCreateResponse)
+def create_watchlist_theme(
+    payload: WatchlistThemeCreateRequest,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> WatchlistThemeCreateResponse:
+    embedding_service = None if payload.theme_id else EmbeddingService()
+    watchlist_service = WatchlistService(
+        embedding_service=embedding_service,
+        watchlist_repository=WatchlistRepository(session),
+        theme_repository=ThemeRepository(session),
+    )
+    try:
+        if payload.theme_id:
+            try:
+                normalized_theme_id = str(uuid.UUID(payload.theme_id))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="theme_id must be a valid UUID.") from exc
+            result = watchlist_service.watch_existing_theme(
+                user_id=current_user.id,
+                theme_id=normalized_theme_id,
+                alerts_enabled=payload.alerts_enabled,
+            )
+        else:
+            result = watchlist_service.create_custom_theme(
+                user_id=current_user.id,
+                canonical_label=str(payload.canonical_label or ""),
+                description=payload.description,
+                alerts_enabled=payload.alerts_enabled,
+                backfill_min_similarity=payload.backfill_min_similarity,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    theme = result.get("theme")
+    if not isinstance(theme, dict):
+        raise HTTPException(status_code=500, detail="Failed to create watchlist theme.")
+    return WatchlistThemeCreateResponse(
+        created_new_theme=bool(result["created_new_theme"]),
+        watchlist_link_created=bool(result["watchlist_link_created"]),
+        theme=_to_watchlist_theme_response_item(theme),
+        backfill_source_themes_count=int(result["backfill_source_themes_count"]),
+        backfill_source_candidates_count=int(result["backfill_source_candidates_count"]),
+        backfill_inherited_from_themes=int(result["backfill_inherited_from_themes"]),
+        backfill_inherited_from_candidates=int(result["backfill_inherited_from_candidates"]),
+        snapshot_created=bool(result["snapshot_created"]),
+    )
+
+
+@app.delete("/watchlist/themes/{theme_id}")
+def delete_watchlist_theme(
+    theme_id: str,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> dict[str, bool]:
+    try:
+        normalized_theme_id = str(uuid.UUID(theme_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="theme_id must be a valid UUID.") from exc
+    watchlist_service = WatchlistService(
+        embedding_service=None,
+        watchlist_repository=WatchlistRepository(session),
+        theme_repository=ThemeRepository(session),
+    )
+    removed = watchlist_service.remove_watchlist_theme(user_id=current_user.id, theme_id=normalized_theme_id)
+    return {"removed": bool(removed)}
+
+
+@app.get("/watchlist/themes/{theme_id}/articles", response_model=list[WatchlistThemeArticleResponseItem])
+def list_watchlist_theme_articles(
+    theme_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_db_session),
+) -> list[WatchlistThemeArticleResponseItem]:
+    try:
+        normalized_theme_id = str(uuid.UUID(theme_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="theme_id must be a valid UUID.") from exc
+    watchlist_service = WatchlistService(
+        embedding_service=None,
+        watchlist_repository=WatchlistRepository(session),
+        theme_repository=ThemeRepository(session),
+    )
+    try:
+        rows = watchlist_service.list_watchlist_theme_articles(
+            user_id=current_user.id,
+            theme_id=normalized_theme_id,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return [
+        WatchlistThemeArticleResponseItem(
+            article_id=str(row["article_id"]),
+            canonical_url=str(row["canonical_url"]),
+            title=row.get("title"),
+            description=row.get("description"),
+            published_at=row.get("published_at"),
+            source_name=str(row["source_name"]),
+            similarity_score=float(row["similarity_score"]),
+            assignment_score=float(row["assignment_score"]),
+            assignment_method=str(row["assignment_method"]),
+            matched_at=row.get("matched_at"),
+        )
+        for row in rows
+    ]
+
+
 @app.post("/auth/register", response_model=UserResponse)
 def register_user(user_data: UserCreate, session: Session = Depends(get_db_session)) -> UserResponse:
     user_repo = UserRepository(session)
@@ -293,3 +503,23 @@ def _normalize_source_filters(
         seen_lower.add(key)
         deduped.append(source)
     return deduped
+
+
+def _to_watchlist_theme_response_item(row: dict[str, object]) -> WatchlistThemeResponseItem:
+    return WatchlistThemeResponseItem(
+        id=str(row["id"]),
+        slug=str(row["slug"]),
+        canonical_label=str(row["canonical_label"]),
+        summary=row.get("summary") if isinstance(row.get("summary"), str) else None,
+        status=str(row["status"]),
+        discovery_method=str(row["discovery_method"]),
+        scope=str(row["scope"]),
+        owner_user_id=str(row["owner_user_id"]) if row.get("owner_user_id") else None,
+        article_count=int(row.get("article_count") or 0),
+        first_seen_at=row.get("first_seen_at") if isinstance(row.get("first_seen_at"), datetime) else None,
+        last_seen_at=row.get("last_seen_at") if isinstance(row.get("last_seen_at"), datetime) else None,
+        created_at=row.get("created_at") if isinstance(row.get("created_at"), datetime) else None,
+        updated_at=row.get("updated_at") if isinstance(row.get("updated_at"), datetime) else None,
+        alerts_enabled=bool(row["alerts_enabled"]) if row.get("alerts_enabled") is not None else None,
+        watchlisted_at=row.get("watchlisted_at") if isinstance(row.get("watchlisted_at"), datetime) else None,
+    )

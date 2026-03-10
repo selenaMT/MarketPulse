@@ -51,6 +51,8 @@ class ThemeAssignmentService:
             if snapshot_min_age_hours is not None
             else int(os.getenv("THEME_SNAPSHOT_MIN_AGE_HOURS", "24"))
         )
+        self._user_theme_match_threshold = float(os.getenv("USER_THEME_MATCH_THRESHOLD", "0.68"))
+        self._user_theme_match_limit = int(os.getenv("USER_THEME_MATCH_LIMIT", "20"))
 
     def assign_articles(self, articles: list[dict[str, Any]]) -> dict[str, int]:
         stats = {
@@ -62,6 +64,8 @@ class ThemeAssignmentService:
             "theme_links_upserted": 0,
             "candidate_theme_links_upserted": 0,
             "theme_snapshots_created": 0,
+            "user_theme_links_upserted": 0,
+            "user_themes_matched": 0,
         }
         work_items: list[dict[str, Any]] = []
         try:
@@ -123,6 +127,8 @@ class ThemeAssignmentService:
         seen_at: datetime,
         stats: dict[str, int],
     ) -> bool:
+        _ = narrative
+        primary_assigned = False
         best_theme = self._theme_repository.find_best_theme(embedding)
         if best_theme and float(best_theme["similarity"]) >= self._theme_match_threshold:
             inserted = self._theme_repository.upsert_theme_article_link(
@@ -143,50 +149,97 @@ class ThemeAssignmentService:
                 if snapshot_created:
                     stats["theme_snapshots_created"] += 1
             stats["theme_matched_real"] += 1
-            return True
+            primary_assigned = True
 
-        best_candidate = self._theme_repository.find_best_candidate(embedding)
-        if best_candidate and float(best_candidate["similarity"]) >= self._candidate_match_threshold:
-            inserted = self._theme_repository.upsert_candidate_article_link(
-                candidate_theme_id=best_candidate["id"],
+        if not primary_assigned:
+            best_candidate = self._theme_repository.find_best_candidate(embedding)
+            if best_candidate and float(best_candidate["similarity"]) >= self._candidate_match_threshold:
+                inserted = self._theme_repository.upsert_candidate_article_link(
+                    candidate_theme_id=best_candidate["id"],
+                    article_id=article_id,
+                    similarity_score=float(best_candidate["similarity"]),
+                    matched_at=seen_at,
+                )
+                self._theme_repository.touch_candidate_seen(best_candidate["id"], seen_at)
+                candidate_count = 0
+                if inserted:
+                    candidate_count = self._theme_repository.recompute_candidate_article_count(best_candidate["id"])
+                    stats["candidate_theme_links_upserted"] += 1
+                stats["theme_matched_candidate"] += 1
+                if inserted and candidate_count >= self._promotion_article_count:
+                    promoted = self._theme_repository.promote_candidate(best_candidate["id"])
+                    if promoted:
+                        stats["theme_candidates_promoted"] += 1
+                primary_assigned = True
+            else:
+                candidate = self._theme_repository.create_or_touch_candidate(
+                    title=narrative,
+                    title_embedding=embedding,
+                    observed_at=seen_at,
+                )
+                inserted = self._theme_repository.upsert_candidate_article_link(
+                    candidate_theme_id=candidate["id"],
+                    article_id=article_id,
+                    similarity_score=1.0,
+                    matched_at=seen_at,
+                )
+                if inserted:
+                    count = self._theme_repository.recompute_candidate_article_count(candidate["id"])
+                    stats["candidate_theme_links_upserted"] += 1
+                    if count == 1:
+                        stats["theme_candidates_created"] += 1
+                    if count >= self._promotion_article_count and candidate.get("status") == "candidate":
+                        promoted = self._theme_repository.promote_candidate(candidate["id"])
+                        if promoted:
+                            stats["theme_candidates_promoted"] += 1
+                self._theme_repository.touch_candidate_seen(candidate["id"], seen_at)
+
+        self._assign_user_themes(
+            article_id=article_id,
+            embedding=embedding,
+            seen_at=seen_at,
+            stats=stats,
+        )
+        return primary_assigned
+
+    def _assign_user_themes(
+        self,
+        *,
+        article_id: Any,
+        embedding: list[float],
+        seen_at: datetime,
+        stats: dict[str, int],
+    ) -> None:
+        user_themes = self._theme_repository.find_matching_user_themes(
+            embedding=embedding,
+            min_similarity=self._user_theme_match_threshold,
+            limit=self._user_theme_match_limit,
+        )
+        if not user_themes:
+            return
+
+        for theme in user_themes:
+            similarity = float(theme.get("similarity", 0.0))
+            inserted = self._theme_repository.upsert_theme_article_link(
+                theme_id=theme["id"],
                 article_id=article_id,
-                similarity_score=float(best_candidate["similarity"]),
+                similarity_score=similarity,
                 matched_at=seen_at,
             )
-            self._theme_repository.touch_candidate_seen(best_candidate["id"], seen_at)
-            candidate_count = 0
-            if inserted:
-                candidate_count = self._theme_repository.recompute_candidate_article_count(best_candidate["id"])
-                stats["candidate_theme_links_upserted"] += 1
-            stats["theme_matched_candidate"] += 1
-            if inserted and candidate_count >= self._promotion_article_count:
-                promoted = self._theme_repository.promote_candidate(best_candidate["id"])
-                if promoted:
-                    stats["theme_candidates_promoted"] += 1
-            return True
+            self._theme_repository.touch_theme_seen(theme["id"], seen_at)
+            stats["user_themes_matched"] += 1
+            if not inserted:
+                continue
 
-        candidate = self._theme_repository.create_or_touch_candidate(
-            title=narrative,
-            title_embedding=embedding,
-            observed_at=seen_at,
-        )
-        inserted = self._theme_repository.upsert_candidate_article_link(
-            candidate_theme_id=candidate["id"],
-            article_id=article_id,
-            similarity_score=1.0,
-            matched_at=seen_at,
-        )
-        if inserted:
-            count = self._theme_repository.recompute_candidate_article_count(candidate["id"])
-            stats["candidate_theme_links_upserted"] += 1
-            if count == 1:
-                stats["theme_candidates_created"] += 1
-            if count >= self._promotion_article_count and candidate.get("status") == "candidate":
-                promoted = self._theme_repository.promote_candidate(candidate["id"])
-                if promoted:
-                    stats["theme_candidates_promoted"] += 1
-        self._theme_repository.touch_candidate_seen(candidate["id"], seen_at)
-        return False
+            self._theme_repository.recompute_theme_article_count(theme["id"])
+            stats["user_theme_links_upserted"] += 1
+            snapshot_created = self._theme_repository.create_snapshot_if_due(
+                theme_id=theme["id"],
+                min_new_articles=self._snapshot_min_new_articles,
+                min_age_hours=self._snapshot_min_age_hours,
+            )
+            if snapshot_created:
+                stats["theme_snapshots_created"] += 1
 
     @staticmethod
     def _extract_narratives(article: dict[str, Any]) -> list[str]:

@@ -96,6 +96,8 @@ def main() -> None:
         "theme_links_upserted": 0,
         "candidate_theme_links_upserted": 0,
         "theme_snapshots_created": 0,
+        "user_theme_links_upserted": 0,
+        "user_themes_matched": 0,
     }
 
     cursor_published_at: datetime | None = None

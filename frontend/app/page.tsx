@@ -43,6 +43,22 @@ type SourceOption = {
   article_count: number;
 };
 
+type HotTheme = {
+  id: string;
+  slug: string;
+  canonical_label: string;
+  status: string;
+  article_count: number;
+  last_seen_at: string | null;
+  updated_at: string | null;
+};
+
+type HotThemeState = {
+  isLoading: boolean;
+  error: string | null;
+  items: HotTheme[];
+};
+
 const DEFAULT_LIMIT = 8;
 const MAX_LIMIT = 20;
 
@@ -75,6 +91,11 @@ export default function Home() {
     results: [],
     lastQuery: "",
   });
+  const [hotThemes, setHotThemes] = useState<HotThemeState>({
+    isLoading: false,
+    error: null,
+    items: [],
+  });
   const sourceDropdownRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -100,6 +121,43 @@ export default function Home() {
       }
     }
     loadSourceOptions();
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isActive = true;
+    async function loadHotThemes() {
+      setHotThemes({ isLoading: true, error: null, items: [] });
+      try {
+        const response = await fetch("/api/themes/hot?limit=10", {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(String(payload?.detail ?? "Cannot load hot themes."));
+        }
+        if (isActive) {
+          setHotThemes({
+            isLoading: false,
+            error: null,
+            items: Array.isArray(payload) ? payload : [],
+          });
+        }
+      } catch (error) {
+        if (isActive) {
+          setHotThemes({
+            isLoading: false,
+            error: error instanceof Error ? error.message : "Cannot load hot themes.",
+            items: [],
+          });
+        }
+      }
+    }
+    loadHotThemes();
     return () => {
       isActive = false;
     };
@@ -267,7 +325,7 @@ export default function Home() {
               </div>
             </div>
             <p className="max-w-2xl text-sm leading-relaxed text-white/85 sm:text-base">
-              Theme features are intentionally disabled while a new theme solution is being rebuilt.
+              Semantic search and chat are active. Theme hotness below is ranked by linked article count.
             </p>
           </div>
           <form onSubmit={onSubmit} className="grid gap-4 px-5 py-5 sm:grid-cols-2 sm:px-8 sm:py-7">
@@ -329,6 +387,49 @@ export default function Home() {
               </button>
             </div>
           </form>
+        </section>
+
+        <section className="card mb-6 px-5 py-5 sm:px-7 sm:py-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold text-[var(--ink)]">Theme Hotness</h2>
+            <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1 font-mono text-xs text-[var(--accent)]">
+              by article count
+            </span>
+          </div>
+          {hotThemes.error ? (
+            <div className="rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+              {hotThemes.error}
+            </div>
+          ) : null}
+          {hotThemes.isLoading ? (
+            <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+              Loading hot themes...
+            </div>
+          ) : null}
+          {!hotThemes.isLoading && !hotThemes.error && hotThemes.items.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+              No ranked themes yet.
+            </div>
+          ) : null}
+          {!hotThemes.isLoading && !hotThemes.error && hotThemes.items.length > 0 ? (
+            <ol className="space-y-3">
+              {hotThemes.items.map((theme, index) => (
+                <li key={theme.id} className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <span className="font-mono text-xs text-[var(--muted)]">#{index + 1}</span>
+                    <span className="rounded-full bg-[var(--warm-soft)] px-2.5 py-1 font-mono text-xs text-[var(--warm)]">
+                      {theme.article_count} articles
+                    </span>
+                  </div>
+                  <h3 className="text-base font-semibold text-[var(--ink)]">{theme.canonical_label}</h3>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    status: {theme.status} | last seen:{" "}
+                    {theme.last_seen_at ? new Date(theme.last_seen_at).toLocaleString() : "unknown"}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          ) : null}
         </section>
 
         <section className="card px-5 py-5 sm:px-7 sm:py-6">

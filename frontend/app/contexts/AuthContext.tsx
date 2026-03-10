@@ -20,36 +20,37 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return Boolean(localStorage.getItem("token"));
-  });
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let isActive = true;
     const token = localStorage.getItem("token");
-    if (!token) return;
 
-    fetch("/api/auth/me", {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-      .then((res) => {
-        if (res.ok) {
-          return res.json();
-        } else {
+    Promise.resolve()
+      .then(async () => {
+        if (!token) return;
+
+        const res = await fetch("/api/auth/me", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (!res.ok) {
           throw new Error("Invalid token");
         }
-      })
-      .then((userData) => {
-        setUser(userData);
+        const userData = await res.json();
+        if (isActive) setUser(userData);
       })
       .catch(() => {
         localStorage.removeItem("token");
       })
       .finally(() => {
-        setIsLoading(false);
+        if (isActive) setIsLoading(false);
       });
+
+    return () => {
+      isActive = false;
+    };
   }, []);
 
   const login = async (email: string, password: string) => {

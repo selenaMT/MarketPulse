@@ -90,6 +90,8 @@ create table if not exists themes (
   summary text null,
   status text not null default 'active',
   discovery_method text not null default 'signal',
+  scope text not null default 'global',
+  owner_user_id uuid null references users(id) on delete cascade,
   first_seen_at timestamptz null,
   last_seen_at timestamptz null,
   title_embedding vector(1536) null,
@@ -99,23 +101,77 @@ create table if not exists themes (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint chk_themes_status
-    check (status in ('candidate', 'emerging', 'active', 'cooling', 'dormant', 'retired'))
+    check (status in ('candidate', 'emerging', 'active', 'cooling', 'dormant', 'retired')),
+  constraint chk_themes_scope
+    check (scope in ('global', 'user')),
+  constraint chk_themes_scope_owner
+    check (
+      (scope = 'global' and owner_user_id is null)
+      or (scope = 'user' and owner_user_id is not null)
+    )
 );
 
 alter table if exists themes
+  add column if not exists scope text not null default 'global',
+  add column if not exists owner_user_id uuid null references users(id) on delete cascade,
   add column if not exists title_embedding vector(1536),
   add column if not exists article_count integer not null default 0,
   add column if not exists current_snapshot_version integer not null default 0,
   add column if not exists last_snapshot_at timestamptz null;
 
-create unique index if not exists idx_themes_canonical_label_ci
-on themes (lower(canonical_label));
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'chk_themes_scope'
+  ) then
+    alter table themes
+      add constraint chk_themes_scope
+      check (scope in ('global', 'user'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'chk_themes_scope_owner'
+  ) then
+    alter table themes
+      add constraint chk_themes_scope_owner
+      check (
+        (scope = 'global' and owner_user_id is null)
+        or (scope = 'user' and owner_user_id is not null)
+      );
+  end if;
+end $$;
+
+drop index if exists idx_themes_canonical_label_ci;
+create unique index if not exists idx_themes_global_canonical_label_ci
+on themes (lower(canonical_label))
+where scope = 'global';
+create unique index if not exists idx_themes_user_owner_canonical_label_ci
+on themes (owner_user_id, lower(canonical_label))
+where scope = 'user';
 create index if not exists idx_themes_status on themes (status);
+create index if not exists idx_themes_scope on themes (scope);
+create index if not exists idx_themes_owner_user_id on themes (owner_user_id);
 create index if not exists idx_themes_last_seen_at on themes (last_seen_at desc);
 create index if not exists idx_themes_article_count on themes (article_count desc);
 create index if not exists idx_themes_title_embedding_hnsw
 on themes using hnsw (title_embedding vector_cosine_ops)
 where title_embedding is not null;
+
+create table if not exists user_theme_links (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  theme_id uuid not null references themes(id) on delete cascade,
+  alerts_enabled boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, theme_id)
+);
+
+create index if not exists idx_user_theme_links_user on user_theme_links (user_id, created_at desc);
+create index if not exists idx_user_theme_links_theme on user_theme_links (theme_id);
 
 create table if not exists theme_candidates (
   id uuid primary key default gen_random_uuid(),

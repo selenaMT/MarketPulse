@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -24,26 +25,143 @@ class ThemeRepository:
     def rollback(self) -> None:
         self._session.rollback()
 
+    def list_hot_themes(self, limit: int = 10) -> list[dict[str, Any]]:
+        try:
+            rows = self._session.execute(
+                text(
+                    """
+                    select
+                      id,
+                      slug,
+                      canonical_label,
+                      article_count,
+                      status,
+                      last_seen_at,
+                      updated_at
+                    from themes
+                    where coalesce(status, 'active') <> 'retired'
+                      and coalesce(scope, 'global') = 'global'
+                      and article_count > 0
+                    order by article_count desc, last_seen_at desc nulls last, updated_at desc
+                    limit :limit
+                    """
+                ),
+                {"limit": max(1, int(limit))},
+            ).mappings().all()
+        except ProgrammingError as exc:
+            if not self._is_missing_scope_column(exc):
+                raise
+            self._session.rollback()
+            rows = self._session.execute(
+                text(
+                    """
+                    select
+                      id,
+                      slug,
+                      canonical_label,
+                      article_count,
+                      status,
+                      last_seen_at,
+                      updated_at
+                    from themes
+                    where coalesce(status, 'active') <> 'retired'
+                      and article_count > 0
+                    order by article_count desc, last_seen_at desc nulls last, updated_at desc
+                    limit :limit
+                    """
+                ),
+                {"limit": max(1, int(limit))},
+            ).mappings().all()
+        return [dict(row) for row in rows]
+
     def find_best_theme(self, embedding: list[float]) -> dict[str, Any] | None:
         vector = self._to_vector_literal(embedding)
-        row = self._session.execute(
-            text(
-                """
-                select
-                  id,
-                  canonical_label as title,
-                  coalesce(status, 'active') as status,
-                  (1 - (title_embedding <=> cast(:vector as vector)))::double precision as similarity
-                from themes
-                where title_embedding is not null
-                  and coalesce(status, 'active') <> 'retired'
-                order by title_embedding <=> cast(:vector as vector)
-                limit 1
-                """
-            ),
-            {"vector": vector},
-        ).mappings().first()
+        try:
+            row = self._session.execute(
+                text(
+                    """
+                    select
+                      id,
+                      canonical_label as title,
+                      coalesce(status, 'active') as status,
+                      (1 - (title_embedding <=> cast(:vector as vector)))::double precision as similarity
+                    from themes
+                    where title_embedding is not null
+                      and coalesce(status, 'active') <> 'retired'
+                      and coalesce(scope, 'global') = 'global'
+                    order by title_embedding <=> cast(:vector as vector)
+                    limit 1
+                    """
+                ),
+                {"vector": vector},
+            ).mappings().first()
+        except ProgrammingError as exc:
+            if not self._is_missing_scope_column(exc):
+                raise
+            self._session.rollback()
+            row = self._session.execute(
+                text(
+                    """
+                    select
+                      id,
+                      canonical_label as title,
+                      coalesce(status, 'active') as status,
+                      (1 - (title_embedding <=> cast(:vector as vector)))::double precision as similarity
+                    from themes
+                    where title_embedding is not null
+                      and coalesce(status, 'active') <> 'retired'
+                    order by title_embedding <=> cast(:vector as vector)
+                    limit 1
+                    """
+                ),
+                {"vector": vector},
+            ).mappings().first()
         return dict(row) if row else None
+
+    def find_matching_user_themes(
+        self,
+        embedding: list[float],
+        min_similarity: float,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        vector = self._to_vector_literal(embedding)
+        try:
+            rows = self._session.execute(
+                text(
+                    """
+                    select
+                      id,
+                      owner_user_id,
+                      canonical_label as title,
+                      coalesce(status, 'active') as status,
+                      (1 - (title_embedding <=> cast(:vector as vector)))::double precision as similarity
+                    from themes
+                    where title_embedding is not null
+                      and scope = 'user'
+                      and coalesce(status, 'active') <> 'retired'
+                      and exists (
+                        select 1
+                        from user_theme_links utl
+                        where utl.theme_id = themes.id
+                      )
+                      and (1 - (title_embedding <=> cast(:vector as vector))) >= :min_similarity
+                    order by title_embedding <=> cast(:vector as vector)
+                    limit :limit
+                    """
+                ),
+                {
+                    "vector": vector,
+                    "min_similarity": float(min_similarity),
+                    "limit": max(1, int(limit)),
+                },
+            ).mappings().all()
+        except ProgrammingError as exc:
+            # Backward-compat mode before watchlist schema migration exists.
+            if not (self._is_missing_scope_column(exc) or self._is_missing_user_theme_links_table(exc)):
+                raise
+            self._session.rollback()
+            return []
+        return [dict(row) for row in rows]
 
     def find_best_candidate(self, embedding: list[float]) -> dict[str, Any] | None:
         vector = self._to_vector_literal(embedding)
@@ -220,6 +338,28 @@ class ThemeRepository:
             {"theme_id": theme_id, "seen_at": seen_at},
         )
 
+    def refresh_theme_seen_bounds(self, theme_id: Any) -> None:
+        self._session.execute(
+            text(
+                """
+                update themes
+                set
+                  first_seen_at = bounds.first_seen_at,
+                  last_seen_at = bounds.last_seen_at,
+                  updated_at = now()
+                from (
+                  select
+                    min(matched_at) as first_seen_at,
+                    max(matched_at) as last_seen_at
+                  from theme_article_links
+                  where theme_id = :theme_id
+                ) as bounds
+                where themes.id = :theme_id
+                """
+            ),
+            {"theme_id": theme_id},
+        )
+
     def touch_candidate_seen(self, candidate_id: Any, seen_at: datetime) -> None:
         self._session.execute(
             text(
@@ -255,6 +395,20 @@ class ThemeRepository:
             {"theme_id": theme_id},
         ).mappings().first()
         return int(row["article_count"]) if row else 0
+
+    def update_theme_summary(self, theme_id: Any, summary: str | None) -> None:
+        self._session.execute(
+            text(
+                """
+                update themes
+                set
+                  summary = :summary,
+                  updated_at = now()
+                where id = :theme_id
+                """
+            ),
+            {"theme_id": theme_id, "summary": summary},
+        )
 
     def recompute_candidate_article_count(self, candidate_id: Any) -> int:
         row = self._session.execute(
@@ -305,6 +459,8 @@ class ThemeRepository:
                   canonical_label,
                   status,
                   discovery_method,
+                  scope,
+                  owner_user_id,
                   summary,
                   title_embedding,
                   article_count,
@@ -318,6 +474,8 @@ class ThemeRepository:
                   :canonical_label,
                   'active',
                   'candidate_promotion',
+                  'global',
+                  null,
                   null,
                   cast(:title_embedding as vector),
                   :article_count,
@@ -698,3 +856,13 @@ class ThemeRepository:
         if not isinstance(embedding, list) or not embedding:
             raise ValueError("embedding must be a non-empty float list")
         return "[" + ",".join(str(float(value)) for value in embedding) + "]"
+
+    @staticmethod
+    def _is_missing_scope_column(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "scope" in message and "does not exist" in message
+
+    @staticmethod
+    def _is_missing_user_theme_links_table(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "user_theme_links" in message and "does not exist" in message

@@ -124,6 +124,41 @@ class ThemeRepository:
             normalized_rows.append(payload)
         return normalized_rows
 
+    def list_themes_for_assignment(self) -> list[dict[str, Any]]:
+        """Return active theme profiles for fuzzy + semantic assignment."""
+        query = text(
+            """
+            select
+              t.id::text as theme_id,
+              t.slug,
+              t.canonical_label,
+              t.summary,
+              t.status,
+              t.discovery_method,
+              t.first_seen_at,
+              t.last_seen_at,
+              t.centroid_embedding,
+              t.centroid_count,
+              t.entity_profile,
+              t.asset_profile,
+              t.relationship_profile
+            from themes t
+            where t.status <> 'retired'
+            order by t.canonical_label asc
+            """
+        )
+        rows = self._session.execute(query).mappings().all()
+        normalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row)
+            payload["centroid_embedding"] = self._normalize_vector(payload.get("centroid_embedding"))
+            payload["centroid_count"] = int(payload.get("centroid_count") or 0)
+            payload["entity_profile"] = self._normalize_str_list(payload.get("entity_profile"))
+            payload["asset_profile"] = self._normalize_str_list(payload.get("asset_profile"))
+            payload["relationship_profile"] = self._normalize_str_list(payload.get("relationship_profile"))
+            normalized_rows.append(payload)
+        return normalized_rows
+
     def get_theme_by_ref(self, theme_ref: str) -> dict[str, Any] | None:
         """Resolve a theme by UUID or slug."""
         theme_uuid = self._parse_uuid(theme_ref)

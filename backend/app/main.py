@@ -96,7 +96,6 @@ class ThemeOverviewResponse(BaseModel):
     total_articles: int = Field(ge=0)
     source_diversity: int = Field(ge=0)
     avg_assignment_score: float
-    aliases: list[str]
     trend: str
 
 

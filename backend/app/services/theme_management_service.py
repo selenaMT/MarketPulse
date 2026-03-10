@@ -16,25 +16,34 @@ from app.repositories.theme_repository import ThemeRepository
 _NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9\s]+")
 _SPACES_PATTERN = re.compile(r"\s+")
 
+DEFAULT_THEME_FUZZY_MATCH_THRESHOLD = 0.2
+DEFAULT_THEME_CANDIDATE_CLUSTER_SIMILARITY = 0.6
+DEFAULT_THEME_MERGE_SIMILARITY_THRESHOLD = 0.7
+
+DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_ARTICLES = 2
+DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_SOURCES = 1
+DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_ACTIVE_DAYS = 0
+DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_EMBEDDINGS = 0
+# Lower than historical default because sparse macro signals often score lower semantically.
+DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_COHESION = 0.55
+
 
 @dataclass(frozen=True)
 class ThemeScoreWeights:
-    alias: float
+    fuzzy: float
     semantic: float
     entity: float
     asset: float
     relationship: float
-    token: float
 
     @property
     def as_dict(self) -> dict[str, float]:
         return {
-            "alias": self.alias,
+            "fuzzy": self.fuzzy,
             "semantic": self.semantic,
             "entity": self.entity,
             "asset": self.asset,
             "relationship": self.relationship,
-            "token": self.token,
         }
 
 
@@ -48,7 +57,7 @@ class ThemeManagementService:
         candidate_promotion_threshold: int | None = None,
         max_signals_per_article: int = 5,
         max_assignments_per_article: int | None = None,
-        fuzzy_match_threshold: float = 0.88,
+        fuzzy_match_threshold: float = DEFAULT_THEME_FUZZY_MATCH_THRESHOLD,
         fuzzy_token_overlap_threshold: float = 0.65,
         assignment_version: str | None = None,
         assignment_min_score: float | None = None,
@@ -62,7 +71,6 @@ class ThemeManagementService:
         candidate_promotion_min_cohesion: float | None = None,
         candidate_promotion_min_embeddings: int | None = None,
         merge_similarity_threshold: float | None = None,
-        merge_alias_overlap_threshold: float | None = None,
         split_min_articles: int | None = None,
         split_low_cohesion_threshold: float | None = None,
         split_stddev_threshold: float | None = None,
@@ -84,7 +92,7 @@ class ThemeManagementService:
         self._assignment_min_score = self._bound_float(
             assignment_min_score
             if assignment_min_score is not None
-            else self._env_float("THEME_ASSIGNMENT_MIN_SCORE", 0.56),
+            else self._env_float("THEME_ASSIGNMENT_MIN_SCORE", 0.7),
             0.0,
             1.0,
         )
@@ -109,7 +117,10 @@ class ThemeManagementService:
         self._candidate_cluster_similarity_threshold = self._bound_float(
             candidate_cluster_similarity_threshold
             if candidate_cluster_similarity_threshold is not None
-            else self._env_float("THEME_CANDIDATE_CLUSTER_SIMILARITY", 0.84),
+            else self._env_float(
+                "THEME_CANDIDATE_CLUSTER_SIMILARITY",
+                DEFAULT_THEME_CANDIDATE_CLUSTER_SIMILARITY,
+            ),
             0.0,
             1.0,
         )
@@ -124,27 +135,39 @@ class ThemeManagementService:
             1,
             int(
                 candidate_promotion_threshold
-                or self._env_int("THEME_CANDIDATE_PROMOTION_MIN_ARTICLES", 3)
+                or self._env_int(
+                    "THEME_CANDIDATE_PROMOTION_MIN_ARTICLES",
+                    DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_ARTICLES,
+                )
             ),
         )
         self._candidate_promotion_min_sources = max(
             1,
             int(
                 candidate_promotion_min_sources
-                or self._env_int("THEME_CANDIDATE_PROMOTION_MIN_SOURCES", 2)
+                or self._env_int(
+                    "THEME_CANDIDATE_PROMOTION_MIN_SOURCES",
+                    DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_SOURCES,
+                )
             ),
         )
         self._candidate_promotion_min_active_days = max(
-            1,
+            0,
             int(
                 candidate_promotion_min_active_days
-                or self._env_int("THEME_CANDIDATE_PROMOTION_MIN_ACTIVE_DAYS", 2)
+                or self._env_int(
+                    "THEME_CANDIDATE_PROMOTION_MIN_ACTIVE_DAYS",
+                    DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_ACTIVE_DAYS,
+                )
             ),
         )
         self._candidate_promotion_min_cohesion = self._bound_float(
             candidate_promotion_min_cohesion
             if candidate_promotion_min_cohesion is not None
-            else self._env_float("THEME_CANDIDATE_PROMOTION_MIN_COHESION", 0.72),
+            else self._env_float(
+                "THEME_CANDIDATE_PROMOTION_MIN_COHESION",
+                DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_COHESION,
+            ),
             0.0,
             1.0,
         )
@@ -153,20 +176,19 @@ class ThemeManagementService:
             int(
                 candidate_promotion_min_embeddings
                 if candidate_promotion_min_embeddings is not None
-                else self._env_int("THEME_CANDIDATE_PROMOTION_MIN_EMBEDDINGS", 2)
+                else self._env_int(
+                    "THEME_CANDIDATE_PROMOTION_MIN_EMBEDDINGS",
+                    DEFAULT_THEME_CANDIDATE_PROMOTION_MIN_EMBEDDINGS,
+                )
             ),
         )
         self._merge_similarity_threshold = self._bound_float(
             merge_similarity_threshold
             if merge_similarity_threshold is not None
-            else self._env_float("THEME_MERGE_SIMILARITY_THRESHOLD", 0.91),
-            0.0,
-            1.0,
-        )
-        self._merge_alias_overlap_threshold = self._bound_float(
-            merge_alias_overlap_threshold
-            if merge_alias_overlap_threshold is not None
-            else self._env_float("THEME_MERGE_ALIAS_OVERLAP_THRESHOLD", 0.45),
+            else self._env_float(
+                "THEME_MERGE_SIMILARITY_THRESHOLD",
+                DEFAULT_THEME_MERGE_SIMILARITY_THRESHOLD,
+            ),
             0.0,
             1.0,
         )
@@ -190,8 +212,8 @@ class ThemeManagementService:
         self._weights = self._load_score_weights()
 
     def assign_articles(self, articles: list[dict[str, Any]]) -> dict[str, int | float]:
-        alias_index, theme_index = self._build_theme_indexes()
-        candidate_alias_index, candidate_index = self._build_candidate_indexes()
+        theme_index = self._build_theme_indexes()
+        candidate_index = self._build_candidate_indexes()
         assigned_articles = 0
         linked_rows = 0
         created_themes = 0
@@ -203,9 +225,7 @@ class ThemeManagementService:
         for article in articles:
             result = self._assign_single_article(
                 article,
-                alias_index=alias_index,
                 theme_index=theme_index,
-                candidate_alias_index=candidate_alias_index,
                 candidate_index=candidate_index,
             )
             if int(result["linked_rows"]) > 0:
@@ -236,7 +256,6 @@ class ThemeManagementService:
 
     def generate_maintenance_recommendations(self) -> dict[str, int]:
         profiles = self._theme_repository.list_theme_profiles_for_maintenance()
-        alias_sets = self._theme_repository.list_theme_alias_sets()
         recommendations: list[dict[str, Any]] = []
         merge_lineage_rows: list[dict[str, str]] = []
 
@@ -245,7 +264,6 @@ class ThemeManagementService:
             if not left_vector:
                 continue
             left_theme_id = str(left["theme_id"])
-            left_aliases = alias_sets.get(left_theme_id, set())
             left_links = int(left.get("link_count") or 0)
             for right in profiles[idx + 1 :]:
                 right_vector = self._normalize_vector(right.get("centroid_embedding"))
@@ -257,14 +275,11 @@ class ThemeManagementService:
                 semantic_similarity = self._cosine_similarity(left_vector, right_vector)
                 if semantic_similarity < self._merge_similarity_threshold:
                     continue
-                alias_overlap = self._token_overlap(left_aliases, alias_sets.get(right_theme_id, set()))
-                if alias_overlap < self._merge_alias_overlap_threshold:
-                    continue
                 entity_overlap = self._token_overlap(
                     set(self._normalize_str_list(left.get("entity_profile"))),
                     set(self._normalize_str_list(right.get("entity_profile"))),
                 )
-                confidence = semantic_similarity * 0.72 + alias_overlap * 0.22 + entity_overlap * 0.06
+                confidence = semantic_similarity * 0.88 + entity_overlap * 0.12
                 right_links = int(right.get("link_count") or 0)
                 source = left if left_links <= right_links else right
                 target = right if source is left else left
@@ -276,12 +291,11 @@ class ThemeManagementService:
                         "confidence_score": round(confidence, 6),
                         "status": "suggested",
                         "rationale": (
-                            f"Centroids similar ({semantic_similarity:.3f}), alias overlap "
-                            f"({alias_overlap:.3f})."
+                            f"Centroids similar ({semantic_similarity:.3f}), entity overlap "
+                            f"({entity_overlap:.3f})."
                         ),
                         "payload": {
                             "semantic_similarity": round(semantic_similarity, 6),
-                            "alias_overlap": round(alias_overlap, 6),
                             "entity_overlap": round(entity_overlap, 6),
                         },
                     }
@@ -291,7 +305,7 @@ class ThemeManagementService:
                         "parent_theme_id": str(source["theme_id"]),
                         "child_theme_id": str(target["theme_id"]),
                         "relation_type": "merge_recommended",
-                        "note": f"semantic={semantic_similarity:.4f},alias={alias_overlap:.4f}",
+                        "note": f"semantic={semantic_similarity:.4f},entity={entity_overlap:.4f}",
                     }
                 )
 
@@ -401,9 +415,7 @@ class ThemeManagementService:
         overview = self._theme_repository.get_theme_overview(str(theme["theme_id"]))
         if overview is None:
             return None
-        aliases = self._theme_repository.list_theme_aliases(str(theme["theme_id"]))
         timeline = self._theme_repository.list_theme_timeline(str(theme["theme_id"]), days=14)
-        overview["aliases"] = aliases
         overview["trend"] = self._trend_from_timeline(timeline)
         return overview
 
@@ -439,9 +451,7 @@ class ThemeManagementService:
         self,
         article: dict[str, Any],
         *,
-        alias_index: dict[str, dict[str, Any]],
         theme_index: dict[str, dict[str, Any]],
-        candidate_alias_index: dict[str, dict[str, Any]],
         candidate_index: dict[str, dict[str, Any]],
     ) -> dict[str, int]:
         metadata = article.get("metadata")
@@ -477,7 +487,6 @@ class ThemeManagementService:
                 signal_text=signal_text,
                 normalized_signal=normalized_signal,
                 context=context,
-                alias_index=alias_index,
                 theme_index=theme_index,
                 semantic_candidates=semantic_candidates,
             )
@@ -488,9 +497,7 @@ class ThemeManagementService:
                     signal_text=signal_text,
                     normalized_signal=normalized_signal,
                     observed_at=observed_at,
-                    alias_index=alias_index,
                     theme_index=theme_index,
-                    candidate_alias_index=candidate_alias_index,
                     candidate_index=candidate_index,
                 )
                 created_themes += int(promoted["created_themes"])
@@ -527,7 +534,7 @@ class ThemeManagementService:
                 assignment_method=str(payload["method"]),
                 assignment_version=self._assignment_version,
                 assignment_rationale=payload["rationale"],
-                alias_score=float(components["alias"]),
+                alias_score=0.0,
                 semantic_score=float(components["semantic"]),
                 entity_overlap_score=float(components["entity"]),
                 asset_overlap_score=float(components["asset"]),
@@ -566,29 +573,24 @@ class ThemeManagementService:
         signal_text: str,
         normalized_signal: str,
         context: dict[str, Any],
-        alias_index: dict[str, dict[str, Any]],
         theme_index: dict[str, dict[str, Any]],
         semantic_candidates: dict[str, float],
     ) -> dict[str, Any] | None:
-        exact_theme = alias_index.get(normalized_signal)
         fuzzy_theme, fuzzy_score = self._find_fuzzy_theme(normalized_signal, theme_index=theme_index)
         candidate_ids: set[str] = set(semantic_candidates.keys())
-        if exact_theme:
-            candidate_ids.add(str(exact_theme["theme_id"]))
         if fuzzy_theme:
             candidate_ids.add(str(fuzzy_theme["theme_id"]))
         if not candidate_ids:
             return None
 
         ranked: list[dict[str, Any]] = []
-        signal_tokens = set(normalized_signal.split())
         for theme_id in candidate_ids:
             theme = theme_index.get(theme_id)
             if theme is None:
                 continue
-            alias_score = 1.0 if exact_theme and str(exact_theme["theme_id"]) == theme_id else 0.0
-            if alias_score <= 0 and fuzzy_theme and str(fuzzy_theme["theme_id"]) == theme_id:
-                alias_score = fuzzy_score
+            fuzzy_match_score = (
+                fuzzy_score if fuzzy_theme and str(fuzzy_theme["theme_id"]) == theme_id else 0.0
+            )
             semantic_score = float(semantic_candidates.get(theme_id) or 0.0)
             if semantic_score <= 0.0:
                 semantic_score = self._cosine_similarity(context["embedding"], theme.get("centroid_embedding"))
@@ -597,43 +599,36 @@ class ThemeManagementService:
             relationship_overlap = self._token_overlap(
                 set(context["relationships"]), set(theme["relationship_profile_set"])
             )
-            token_overlap = self._token_overlap(
-                signal_tokens,
-                set(self._normalize_label(str(theme["canonical_label"])).split()),
-            )
             score = self._score_components(
-                alias_score=alias_score,
+                fuzzy_match_score=fuzzy_match_score,
                 semantic_score=semantic_score,
                 entity_overlap=entity_overlap,
                 asset_overlap=asset_overlap,
                 relationship_overlap=relationship_overlap,
-                token_overlap=token_overlap,
             )
             ranked.append(
                 {
                     "theme_id": theme_id,
                     "score": score,
                     "components": {
-                        "alias": round(alias_score, 6),
+                        "fuzzy": round(fuzzy_match_score, 6),
                         "semantic": round(semantic_score, 6),
                         "entity": round(entity_overlap, 6),
                         "asset": round(asset_overlap, 6),
                         "relationship": round(relationship_overlap, 6),
-                        "token": round(token_overlap, 6),
                     },
-                    "method": f"{self._assignment_version}_{self._resolve_assignment_method(alias_score=alias_score, semantic_score=semantic_score)}",
+                    "method": f"{self._assignment_version}_{self._resolve_assignment_method(fuzzy_match_score=fuzzy_match_score, semantic_score=semantic_score)}",
                     "rationale": {
                         "signal_text": signal_text,
                         "normalized_signal": normalized_signal,
                         "theme_id": theme_id,
                         "theme_label": theme["canonical_label"],
                         "weights": self._weights.as_dict,
-                        "alias_score": round(alias_score, 6),
+                        "fuzzy_score": round(fuzzy_match_score, 6),
                         "semantic_score": round(semantic_score, 6),
                         "entity_overlap": round(entity_overlap, 6),
                         "asset_overlap": round(asset_overlap, 6),
                         "relationship_overlap": round(relationship_overlap, 6),
-                        "token_overlap": round(token_overlap, 6),
                     },
                 }
             )
@@ -648,12 +643,9 @@ class ThemeManagementService:
         best["rationale"]["margin_score"] = round(max(margin, 0.0), 6)
         if float(best["score"]) < self._assignment_min_score:
             return None
-        if margin < self._assignment_min_margin and float(best["components"]["alias"]) < 0.999:
+        if margin < self._assignment_min_margin and float(best["components"]["fuzzy"]) < 0.999:
             return None
-        if (
-            float(best["components"]["alias"]) <= 0
-            and float(best["components"]["semantic"]) < self._semantic_min_similarity
-        ):
+        if float(best["components"]["semantic"]) < self._semantic_min_similarity:
             return None
         return best
 
@@ -665,14 +657,10 @@ class ThemeManagementService:
         signal_text: str,
         normalized_signal: str,
         observed_at: datetime,
-        alias_index: dict[str, dict[str, Any]],
         theme_index: dict[str, dict[str, Any]],
-        candidate_alias_index: dict[str, dict[str, Any]],
         candidate_index: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        candidate = candidate_alias_index.get(normalized_signal)
-        if candidate is None:
-            candidate = self._find_candidate_cluster_by_semantics(context=context, candidate_index=candidate_index)
+        candidate = self._find_candidate_cluster_by_semantics(context=context, candidate_index=candidate_index)
         if candidate is None:
             candidate = self._theme_repository.ensure_theme_candidate(
                 display_label=signal_text,
@@ -681,11 +669,6 @@ class ThemeManagementService:
             )
 
         candidate_id = str(candidate["candidate_id"])
-        self._theme_repository.add_theme_candidate_alias(
-            candidate_id=candidate_id,
-            alias=signal_text,
-            normalized_alias=normalized_signal,
-        )
         observed = self._theme_repository.register_theme_candidate_observation(
             candidate_id=candidate_id,
             article_id=str(article["article_id"]),
@@ -698,7 +681,6 @@ class ThemeManagementService:
         )
         observed_candidate = observed.get("candidate") or candidate
         quality = observed.get("quality") if isinstance(observed.get("quality"), dict) else {}
-        candidate_alias_index[normalized_signal] = observed_candidate
         candidate_index[candidate_id] = observed_candidate
 
         promotion = self._promote_candidate_if_ready(
@@ -718,7 +700,6 @@ class ThemeManagementService:
 
         theme = promotion["theme"]
         theme_id = str(theme["theme_id"])
-        alias_index[normalized_signal] = theme
         theme_index[theme_id] = self._with_theme_profile_sets(theme)
         return {
             "theme": theme,
@@ -729,7 +710,7 @@ class ThemeManagementService:
                 "score": float(promotion.get("score") or 0.74),
                 "method": f"{self._assignment_version}_candidate_promotion",
                 "components": {
-                    "alias": 0.0,
+                    "fuzzy": 0.0,
                     "semantic": float(promotion.get("semantic_score") or 0.0),
                     "entity": 0.0,
                     "asset": 0.0,
@@ -784,12 +765,6 @@ class ThemeManagementService:
 
         existing_theme = self._theme_repository.get_theme_by_canonical_label(normalized_signal)
         if existing_theme is not None:
-            self._theme_repository.add_theme_alias(
-                theme_id=str(existing_theme["theme_id"]),
-                alias=signal_text,
-                normalized_alias=normalized_signal,
-                is_primary=False,
-            )
             self._theme_repository.mark_candidate_promoted(
                 candidate_id=str(candidate["candidate_id"]),
                 promoted_theme_id=str(existing_theme["theme_id"]),
@@ -817,12 +792,6 @@ class ThemeManagementService:
             entity_profile=self._normalize_str_list(candidate.get("entity_profile")),
             asset_profile=[],
             relationship_profile=[],
-        )
-        self._theme_repository.add_theme_alias(
-            theme_id=str(created_theme["theme_id"]),
-            alias=canonical_label,
-            normalized_alias=normalized_signal,
-            is_primary=True,
         )
         self._theme_repository.mark_candidate_promoted(
             candidate_id=str(candidate["candidate_id"]),
@@ -860,11 +829,7 @@ class ThemeManagementService:
             semantic_similarity = float(item.get("semantic_similarity") or 0.0)
             candidate_entities = set(self._normalize_str_list(item.get("entity_profile")))
             entity_overlap = self._token_overlap(entities, candidate_entities)
-            if (
-                entity_overlap < self._candidate_cluster_entity_overlap_threshold
-                and entities
-                and candidate_entities
-            ):
+            if entities and candidate_entities and entity_overlap <= 0.0:
                 continue
             combined = semantic_similarity * 0.82 + entity_overlap * 0.18
             if combined > best_score:
@@ -872,10 +837,9 @@ class ThemeManagementService:
                 best = candidate_index.get(str(item["candidate_id"])) or item
         return best
 
-    def _build_theme_indexes(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-        alias_index: dict[str, dict[str, Any]] = {}
+    def _build_theme_indexes(self) -> dict[str, dict[str, Any]]:
         theme_index: dict[str, dict[str, Any]] = {}
-        for row in self._theme_repository.list_theme_alias_mappings():
+        for row in self._theme_repository.list_themes_for_assignment():
             theme_id = str(row["theme_id"])
             theme_payload = self._with_theme_profile_sets(
                 {
@@ -894,14 +858,12 @@ class ThemeManagementService:
                     "relationship_profile": self._normalize_str_list(row.get("relationship_profile")),
                 }
             )
-            alias_index[str(row["normalized_alias"])] = theme_payload
             theme_index[theme_id] = theme_payload
-        return alias_index, theme_index
+        return theme_index
 
-    def _build_candidate_indexes(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-        candidate_alias_index: dict[str, dict[str, Any]] = {}
+    def _build_candidate_indexes(self) -> dict[str, dict[str, Any]]:
         candidate_index: dict[str, dict[str, Any]] = {}
-        for row in self._theme_repository.list_theme_candidate_alias_mappings():
+        for row in self._theme_repository.list_open_theme_candidates():
             candidate_id = str(row["candidate_id"])
             payload = {
                 "candidate_id": candidate_id,
@@ -917,8 +879,7 @@ class ThemeManagementService:
                 "entity_profile": self._normalize_str_list(row.get("entity_profile")),
             }
             candidate_index[candidate_id] = payload
-            candidate_alias_index[str(row["normalized_alias"])] = payload
-        return candidate_alias_index, candidate_index
+        return candidate_index
 
     def _find_fuzzy_theme(
         self,
@@ -1048,35 +1009,31 @@ class ThemeManagementService:
     def _score_components(
         self,
         *,
-        alias_score: float,
+        fuzzy_match_score: float,
         semantic_score: float,
         entity_overlap: float,
         asset_overlap: float,
         relationship_overlap: float,
-        token_overlap: float,
     ) -> float:
         return round(
             self._bound_float(
-                self._weights.alias * alias_score
+                self._weights.fuzzy * fuzzy_match_score
                 + self._weights.semantic * semantic_score
                 + self._weights.entity * entity_overlap
                 + self._weights.asset * asset_overlap
-                + self._weights.relationship * relationship_overlap
-                + self._weights.token * token_overlap,
+                + self._weights.relationship * relationship_overlap,
                 0.0,
                 1.0,
             ),
             6,
         )
 
-    def _resolve_assignment_method(self, *, alias_score: float, semantic_score: float) -> str:
-        if alias_score >= 0.999:
-            return "alias_exact"
-        if alias_score >= self._fuzzy_match_threshold:
-            return "alias_fuzzy"
+    def _resolve_assignment_method(self, *, fuzzy_match_score: float, semantic_score: float) -> str:
+        if fuzzy_match_score >= self._fuzzy_match_threshold:
+            return "fuzzy"
         if semantic_score >= max(self._semantic_min_similarity, 0.5):
             return "semantic"
-        return "hybrid"
+        return "fuzzy_semantic"
 
     @staticmethod
     def _normalize_label(label: str) -> str:
@@ -1174,23 +1131,21 @@ class ThemeManagementService:
 
     def _load_score_weights(self) -> ThemeScoreWeights:
         values = {
-            "alias": self._env_float("THEME_SCORE_WEIGHT_ALIAS", 0.42),
+            "fuzzy": self._env_float("THEME_SCORE_WEIGHT_FUZZY", 0.52),
             "semantic": self._env_float("THEME_SCORE_WEIGHT_SEMANTIC", 0.33),
-            "entity": self._env_float("THEME_SCORE_WEIGHT_ENTITY", 0.12),
-            "asset": self._env_float("THEME_SCORE_WEIGHT_ASSET", 0.07),
-            "relationship": self._env_float("THEME_SCORE_WEIGHT_RELATIONSHIP", 0.04),
-            "token": self._env_float("THEME_SCORE_WEIGHT_TOKEN", 0.02),
+            "entity": self._env_float("THEME_SCORE_WEIGHT_ENTITY", 0.10),
+            "asset": self._env_float("THEME_SCORE_WEIGHT_ASSET", 0.03),
+            "relationship": self._env_float("THEME_SCORE_WEIGHT_RELATIONSHIP", 0.02),
         }
         total = sum(max(value, 0.0) for value in values.values())
         if total <= 0:
-            return ThemeScoreWeights(0.42, 0.33, 0.12, 0.07, 0.04, 0.02)
+            return ThemeScoreWeights(0.52, 0.33, 0.10, 0.03, 0.02)
         return ThemeScoreWeights(
-            alias=values["alias"] / total,
+            fuzzy=values["fuzzy"] / total,
             semantic=values["semantic"] / total,
             entity=values["entity"] / total,
             asset=values["asset"] / total,
             relationship=values["relationship"] / total,
-            token=values["token"] / total,
         )
 
     @staticmethod

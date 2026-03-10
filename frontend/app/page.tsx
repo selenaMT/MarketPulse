@@ -58,7 +58,6 @@ type ThemeOverview = {
   total_articles: number;
   source_diversity: number;
   avg_assignment_score: number;
-  aliases: string[];
 };
 
 type TimelinePoint = {
@@ -522,7 +521,6 @@ export default function Home() {
                   <p className="text-sm font-semibold text-[var(--ink)]">{themeOverview.canonical_label}</p>
                   <p className="text-xs text-[var(--muted)]">{themeOverview.status} | trend: {themeOverview.trend}</p>
                   <p className="text-xs text-[var(--muted)]">{themeOverview.total_articles} linked articles | {themeOverview.source_diversity} sources | avg {themeOverview.avg_assignment_score.toFixed(2)}</p>
-                  {themeOverview.aliases.length > 0 ? <p className="text-xs text-[var(--muted)]">aliases: {themeOverview.aliases.slice(0, 5).join(", ")}</p> : null}
                   {timeline.length > 0 ? (
                     <div className="rounded-lg border border-[var(--edge)] bg-[var(--paper-soft)] p-2.5">
                       {timeline.slice(Math.max(0, timeline.length - 8)).map((point) => (

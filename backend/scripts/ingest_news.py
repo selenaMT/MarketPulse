@@ -18,10 +18,8 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.db.session import SessionLocal
 from app.pipelines.news_ingestion_pipeline import NewsIngestionPipeline
 from app.repositories.article_repository import ArticleRepository
-from app.repositories.theme_repository import ThemeRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.fetchers.newsapi_source import NewsApiSource
-from app.services.theme_assignment_service import ThemeAssignmentService
 from app.services.text_processing_service import TextProcessingService
 
 
@@ -50,16 +48,10 @@ def main() -> None:
     text_processing_service = TextProcessingService()
     db_session = SessionLocal()
     article_repository = ArticleRepository(db_session)
-    theme_repository = ThemeRepository(db_session)
-    theme_assignment_service = ThemeAssignmentService(
-        embedding_service=embedding_service,
-        theme_repository=theme_repository,
-    )
     pipeline = NewsIngestionPipeline(
         fetchers=[fetcher],
         embedding_service=embedding_service,
         text_processing_service=text_processing_service,
-        theme_assignment_service=theme_assignment_service,
         article_repository=article_repository,
     )
 
@@ -98,23 +90,12 @@ def main() -> None:
     print(f"text_processing_errors_count={result.get('text_processing_errors_count', 0)}")
     print(f"deletion_errors_count={result.get('deletion_errors_count', 0)}")
     print(f"persistence_errors_count={result.get('persistence_errors_count', 0)}")
-    print(f"theme_narratives_processed={result.get('theme_narratives_processed', 0)}")
-    print(f"theme_matched_real={result.get('theme_matched_real', 0)}")
-    print(f"theme_matched_candidate={result.get('theme_matched_candidate', 0)}")
-    print(f"theme_candidates_created={result.get('theme_candidates_created', 0)}")
-    print(f"theme_candidates_promoted={result.get('theme_candidates_promoted', 0)}")
-    print(f"theme_links_upserted={result.get('theme_links_upserted', 0)}")
-    print(
-        f"candidate_theme_links_upserted={result.get('candidate_theme_links_upserted', 0)}"
-    )
-    print(f"theme_snapshots_created={result.get('theme_snapshots_created', 0)}")
     for idx, message in enumerate(result.get("fetch_error_messages", []), start=1):
         print(f"fetch_error_{idx}={message}")
     if result.get("persistence_error"):
         print(f"persistence_error={result['persistence_error']}")
     if result.get("deletion_error"):
         print(f"deletion_error={result['deletion_error']}")
-    print("theme_sync=enabled")
 
 
 if __name__ == "__main__":

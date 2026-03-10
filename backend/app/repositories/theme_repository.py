@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import uuid
 from datetime import datetime, timezone
@@ -248,7 +249,7 @@ class ThemeRepository:
                   where theme_id = :theme_id
                 ) as sub
                 where themes.id = :theme_id
-                returning article_count
+                returning themes.article_count as article_count
                 """
             ),
             {"theme_id": theme_id},
@@ -269,7 +270,7 @@ class ThemeRepository:
                   where candidate_theme_id = :candidate_id
                 ) as sub
                 where theme_candidates.id = :candidate_id
-                returning article_count
+                returning theme_candidates.article_count as article_count
                 """
             ),
             {"candidate_id": candidate_id},
@@ -419,95 +420,159 @@ class ThemeRepository:
         min_new_articles: int,
         min_age_hours: int,
     ) -> bool:
-        params = {
-            "theme_id": theme_id,
-            "min_new_articles": max(int(min_new_articles), 1),
-            "min_age_hours": max(int(min_age_hours), 0),
-        }
-        row = self._session.execute(
+        _ = min_new_articles
+        _ = min_age_hours
+        theme = self._session.execute(
             text(
                 """
-                with locked_theme as (
-                  select
-                    t.id,
-                    t.slug,
-                    t.canonical_label,
-                    t.summary,
-                    t.status,
-                    t.discovery_method,
-                    t.article_count,
-                    t.title_embedding,
-                    t.first_seen_at,
-                    t.last_seen_at,
-                    t.current_snapshot_version,
-                    t.last_snapshot_at
-                  from themes t
-                  where t.id = :theme_id
-                  for update
-                ),
-                thresholds as (
-                  select
-                    lt.*,
-                    (
-                      select count(*)::integer
-                      from theme_article_links tal
-                      where tal.theme_id = lt.id
-                        and tal.matched_at > coalesce(lt.last_snapshot_at, '-infinity'::timestamptz)
-                    ) as new_articles_since_snapshot,
-                    now() as now_ts
-                  from locked_theme lt
-                ),
-                inserted_snapshot as (
-                  insert into historical_themes (
-                    theme_id,
-                    snapshot_version,
-                    snapshot_created_at,
-                    slug,
-                    canonical_label,
-                    summary,
-                    status,
-                    discovery_method,
-                    article_count,
-                    title_embedding,
-                    first_seen_at,
-                    last_seen_at,
-                    created_at
-                  )
-                  select
-                    th.id,
-                    th.current_snapshot_version + 1,
-                    th.now_ts,
-                    th.slug,
-                    th.canonical_label,
-                    th.summary,
-                    th.status,
-                    th.discovery_method,
-                    th.article_count,
-                    th.title_embedding,
-                    th.first_seen_at,
-                    th.last_seen_at,
-                    now()
-                  from thresholds th
-                  where th.new_articles_since_snapshot >= :min_new_articles
-                    and (
-                      th.last_snapshot_at is null
-                      or th.now_ts - th.last_snapshot_at >= make_interval(hours => :min_age_hours)
-                    )
-                  returning theme_id, snapshot_version, snapshot_created_at
-                )
-                update themes t
-                set
-                  current_snapshot_version = isnap.snapshot_version,
-                  last_snapshot_at = isnap.snapshot_created_at,
-                  updated_at = now()
-                from inserted_snapshot isnap
-                where t.id = isnap.theme_id
-                returning t.id
+                select
+                  t.id,
+                  t.slug,
+                  t.canonical_label,
+                  t.summary,
+                  t.status,
+                  t.discovery_method,
+                  t.article_count,
+                  t.title_embedding,
+                  t.first_seen_at,
+                  t.last_seen_at,
+                  t.current_snapshot_version,
+                  t.last_snapshot_at
+                from themes t
+                where t.id = :theme_id
+                for update
                 """
             ),
-            params,
-        ).first()
-        return row is not None
+            {"theme_id": theme_id},
+        ).mappings().first()
+        if not theme:
+            return False
+
+        theme_article_count = int(theme["article_count"] or 0)
+        effective_min_new_articles = max(4, int(math.ceil(theme_article_count * 0.25)))
+
+        baseline_count = 0
+        current_snapshot_version = int(theme["current_snapshot_version"] or 0)
+        if current_snapshot_version > 0:
+            baseline = self._session.execute(
+                text(
+                    """
+                    select article_count
+                    from historical_themes
+                    where theme_id = :theme_id
+                      and snapshot_version = :snapshot_version
+                    limit 1
+                    """
+                ),
+                {
+                    "theme_id": theme["id"],
+                    "snapshot_version": current_snapshot_version,
+                },
+            ).mappings().first()
+            baseline_count = int(baseline["article_count"]) if baseline else 0
+
+        new_article_count = max(theme_article_count - baseline_count, 0)
+        if new_article_count < effective_min_new_articles:
+            return False
+        now_ts = self.utcnow()
+
+        next_snapshot_version = int(theme["current_snapshot_version"] or 0) + 1
+        self._session.execute(
+            text(
+                """
+                insert into historical_themes (
+                  theme_id,
+                  snapshot_version,
+                  snapshot_created_at,
+                  slug,
+                  canonical_label,
+                  summary,
+                  status,
+                  discovery_method,
+                  article_count,
+                  title_embedding,
+                  first_seen_at,
+                  last_seen_at,
+                  created_at
+                )
+                values (
+                  :theme_id,
+                  :snapshot_version,
+                  :snapshot_created_at,
+                  :slug,
+                  :canonical_label,
+                  :summary,
+                  :status,
+                  :discovery_method,
+                  :article_count,
+                  :title_embedding,
+                  :first_seen_at,
+                  :last_seen_at,
+                  now()
+                )
+                """
+            ),
+            {
+                "theme_id": theme["id"],
+                "snapshot_version": next_snapshot_version,
+                "snapshot_created_at": now_ts,
+                "slug": theme["slug"],
+                "canonical_label": theme["canonical_label"],
+                "summary": theme["summary"],
+                "status": theme["status"],
+                "discovery_method": theme["discovery_method"],
+                "article_count": theme["article_count"],
+                "title_embedding": self._to_vector_literal(theme["title_embedding"], allow_none=True),
+                "first_seen_at": theme["first_seen_at"],
+                "last_seen_at": theme["last_seen_at"],
+            },
+        )
+
+        new_articles = self._session.execute(
+            text(
+                """
+                select
+                  a.title,
+                  a.description,
+                  a.content
+                from theme_article_links tal
+                join articles a on a.id = tal.article_id
+                where tal.theme_id = :theme_id
+                order by tal.matched_at desc nulls last
+                limit :max_articles
+                """
+            ),
+            {
+                "theme_id": theme["id"],
+                "max_articles": min(max(new_article_count, 1), 8),
+            },
+        ).mappings().all()
+
+        refreshed_summary = self._build_snapshot_summary(
+            previous_summary=self._clean_text(theme["summary"]),
+            new_articles=[dict(row) for row in new_articles],
+        )
+
+        self._session.execute(
+            text(
+                """
+                update themes
+                set
+                  current_snapshot_version = :snapshot_version,
+                  last_snapshot_at = :last_snapshot_at,
+                  summary = :summary,
+                  updated_at = now()
+                where id = :theme_id
+                """
+            ),
+            {
+                "theme_id": theme["id"],
+                "snapshot_version": next_snapshot_version,
+                "last_snapshot_at": now_ts,
+                "summary": refreshed_summary,
+            },
+        )
+        return True
 
     def build_theme_summary(self, theme_id: Any, max_articles: int = 5) -> str | None:
         rows = self._session.execute(
@@ -541,6 +606,38 @@ class ThemeRepository:
         summary = "Recent associated coverage: " + "; ".join(snippets[:max_articles])
         return summary[:1600]
 
+    def _build_snapshot_summary(
+        self,
+        previous_summary: str | None,
+        new_articles: list[dict[str, Any]],
+    ) -> str | None:
+        sections: list[str] = []
+        baseline = self._clean_text(previous_summary)
+        if baseline:
+            sections.append(f"Previous summary: {baseline}")
+
+        article_snippets: list[str] = []
+        for article in new_articles:
+            title = self._clean_text(article.get("title"))
+            description = self._clean_text(article.get("description"))
+            content = self._clean_text(article.get("content"))
+            parts: list[str] = []
+            if title:
+                parts.append(f"Title: {title}")
+            if description:
+                parts.append(f"Description: {description}")
+            if content:
+                parts.append(f"Content: {self._truncate_text(content, 450)}")
+            if parts:
+                article_snippets.append(" | ".join(parts))
+
+        if article_snippets:
+            sections.append("New linked articles: " + " ; ".join(article_snippets))
+
+        if not sections:
+            return baseline
+        return self._truncate_text(" ".join(sections), 8000)
+
     @staticmethod
     def utcnow() -> datetime:
         return datetime.now(timezone.utc)
@@ -558,6 +655,14 @@ class ThemeRepository:
         return normalized or None
 
     @staticmethod
+    def _truncate_text(text_value: str, max_chars: int) -> str:
+        if len(text_value) <= max_chars:
+            return text_value
+        if max_chars <= 3:
+            return text_value[:max_chars]
+        return text_value[: max_chars - 3].rstrip() + "..."
+
+    @staticmethod
     def _build_slug(title: str, theme_id: uuid.UUID) -> str:
         base = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
         if not base:
@@ -568,6 +673,28 @@ class ThemeRepository:
     def _to_vector_literal(embedding: list[float] | Any, allow_none: bool = False) -> str | None:
         if embedding is None and allow_none:
             return None
+
+        if isinstance(embedding, str):
+            text_value = embedding.strip()
+            if text_value.startswith("[") and text_value.endswith("]"):
+                payload = text_value[1:-1].strip()
+                if not payload:
+                    if allow_none:
+                        return None
+                    raise ValueError("embedding must be non-empty")
+                vector_values = [float(part.strip()) for part in payload.split(",") if part.strip()]
+                if not vector_values:
+                    if allow_none:
+                        return None
+                    raise ValueError("embedding must be non-empty")
+                return "[" + ",".join(str(value) for value in vector_values) + "]"
+            raise ValueError("embedding string must use [v1,v2,...] format")
+
+        if isinstance(embedding, tuple):
+            embedding = list(embedding)
+        elif not isinstance(embedding, list) and hasattr(embedding, "__iter__"):
+            embedding = list(embedding)
+
         if not isinstance(embedding, list) or not embedding:
             raise ValueError("embedding must be a non-empty float list")
         return "[" + ",".join(str(float(value)) for value in embedding) + "]"

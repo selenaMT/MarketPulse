@@ -9,7 +9,6 @@ from app.models.embedding import MAX_BATCH_SIZE
 from app.repositories.article_repository import ArticleRepository
 from app.services.embedding_service import EmbeddingService
 from app.services.fetchers.newsapi_source import NewsApiSource
-from app.services.theme_assignment_service import ThemeAssignmentService
 from app.services.text_processing_service import TextProcessingService
 from app.utils.url import canonicalize_url
 
@@ -22,14 +21,12 @@ class NewsIngestionPipeline:
         fetchers: list[NewsApiSource],
         embedding_service: EmbeddingService,
         text_processing_service: TextProcessingService | None = None,
-        theme_assignment_service: ThemeAssignmentService | None = None,
-        text_processing_max_workers: int = 10,
+        text_processing_max_workers: int = 15,
         article_repository: ArticleRepository | None = None,
     ) -> None:
         self._fetchers = fetchers
         self._embedding_service = embedding_service
         self._text_processing_service = text_processing_service
-        self._theme_assignment_service = theme_assignment_service
         self._text_processing_max_workers = max(text_processing_max_workers, 1)
         self._article_repository = article_repository
 
@@ -64,7 +61,6 @@ class NewsIngestionPipeline:
             persistence_errors,
             persistence_error_message,
         ) = self._persist_articles(keep_true_articles)
-        theme_sync_stats = self._sync_themes(keep_true_articles)
 
         return {
             "fetched_count": len(fetched_articles),
@@ -93,14 +89,6 @@ class NewsIngestionPipeline:
             "text_processing_errors_count": text_processing_errors,
             "deletion_errors_count": deletion_errors,
             "persistence_errors_count": persistence_errors,
-            "theme_narratives_processed": theme_sync_stats["theme_narratives_processed"],
-            "theme_matched_real": theme_sync_stats["theme_matched_real"],
-            "theme_matched_candidate": theme_sync_stats["theme_matched_candidate"],
-            "theme_candidates_created": theme_sync_stats["theme_candidates_created"],
-            "theme_candidates_promoted": theme_sync_stats["theme_candidates_promoted"],
-            "theme_links_upserted": theme_sync_stats["theme_links_upserted"],
-            "candidate_theme_links_upserted": theme_sync_stats["candidate_theme_links_upserted"],
-            "theme_snapshots_created": theme_sync_stats["theme_snapshots_created"],
             "fetch_error_messages": fetch_error_messages,
             "deletion_error": deletion_error_message,
             "persistence_error": persistence_error_message,
@@ -319,41 +307,6 @@ class NewsIngestionPipeline:
             return deleted, 0, None
         except Exception as exc:
             return 0, 1, str(exc)
-
-    def _sync_themes(self, keep_true_articles: list[dict[str, Any]]) -> dict[str, int]:
-        default_stats = {
-            "theme_narratives_processed": 0,
-            "theme_matched_real": 0,
-            "theme_matched_candidate": 0,
-            "theme_candidates_created": 0,
-            "theme_candidates_promoted": 0,
-            "theme_links_upserted": 0,
-            "candidate_theme_links_upserted": 0,
-            "theme_snapshots_created": 0,
-        }
-        if self._theme_assignment_service is None:
-            return default_stats
-        if self._article_repository is None:
-            return default_stats
-        if not keep_true_articles:
-            return default_stats
-        if not hasattr(self._article_repository, "get_by_canonical_urls"):
-            return default_stats
-
-        canonical_urls: list[str] = []
-        for article in keep_true_articles:
-            canonical_url = self._article_to_canonical_url(article)
-            if canonical_url:
-                canonical_urls.append(canonical_url)
-        if not canonical_urls:
-            return default_stats
-
-        try:
-            persisted_articles = self._article_repository.get_by_canonical_urls(canonical_urls)
-            stats = self._theme_assignment_service.assign_articles(persisted_articles)
-            return {**default_stats, **stats}
-        except Exception:
-            return default_stats
 
     @staticmethod
     def _article_to_text(article: dict[str, Any]) -> str | None:

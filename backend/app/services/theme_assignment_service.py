@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from app.models.embedding import MAX_BATCH_SIZE
 from app.repositories.theme_repository import ThemeRepository
 from app.services.embedding_service import EmbeddingService
 
@@ -28,12 +29,12 @@ class ThemeAssignmentService:
         self._theme_match_threshold = (
             theme_match_threshold
             if theme_match_threshold is not None
-            else float(os.getenv("THEME_MATCH_THRESHOLD", "0.78"))
+            else float(os.getenv("THEME_MATCH_THRESHOLD", "0.6"))
         )
         self._candidate_match_threshold = (
             candidate_match_threshold
             if candidate_match_threshold is not None
-            else float(os.getenv("CANDIDATE_THEME_MATCH_THRESHOLD", "0.76"))
+            else float(os.getenv("CANDIDATE_THEME_MATCH_THRESHOLD", "0.6"))
         )
         self._promotion_article_count = (
             promotion_article_count
@@ -43,7 +44,7 @@ class ThemeAssignmentService:
         self._snapshot_min_new_articles = (
             snapshot_min_new_articles
             if snapshot_min_new_articles is not None
-            else int(os.getenv("THEME_SNAPSHOT_MIN_NEW_ARTICLES", "5"))
+            else int(os.getenv("THEME_SNAPSHOT_MIN_NEW_ARTICLES", "4"))
         )
         self._snapshot_min_age_hours = (
             snapshot_min_age_hours
@@ -62,6 +63,7 @@ class ThemeAssignmentService:
             "candidate_theme_links_upserted": 0,
             "theme_snapshots_created": 0,
         }
+        work_items: list[dict[str, Any]] = []
         try:
             for article in articles:
                 article_id = article.get("article_id")
@@ -71,18 +73,34 @@ class ThemeAssignmentService:
                 if not narratives:
                     continue
 
-                embeddings = self._embedding_service.embed(narratives)
                 seen_at = self._article_seen_at(article)
-                for narrative, embedding in zip(narratives, embeddings):
-                    stats["theme_narratives_processed"] += 1
-                    assigned = self._assign_single_narrative(
-                        article_id=article_id,
-                        embedding=embedding,
-                        seen_at=seen_at,
-                        stats=stats,
+
+                for narrative in narratives:
+                    work_items.append(
+                        {
+                            "article_id": article_id,
+                            "narrative": narrative,
+                            "seen_at": seen_at,
+                        }
                     )
-                    if assigned:
-                        continue
+
+            if not work_items:
+                self._theme_repository.commit()
+                return stats
+
+            narrative_texts = [str(item["narrative"]) for item in work_items]
+            embeddings = self._embed_in_chunks(narrative_texts)
+            for item, embedding in zip(work_items, embeddings):
+                stats["theme_narratives_processed"] += 1
+                assigned = self._assign_single_narrative(
+                    article_id=item["article_id"],
+                    narrative=str(item["narrative"]),
+                    embedding=embedding,
+                    seen_at=item["seen_at"],
+                    stats=stats,
+                )
+                if assigned:
+                    continue
         except Exception:
             self._theme_repository.rollback()
             raise
@@ -90,9 +108,17 @@ class ThemeAssignmentService:
         self._theme_repository.commit()
         return stats
 
+    def _embed_in_chunks(self, texts: list[str]) -> list[list[float]]:
+        embeddings: list[list[float]] = []
+        for start in range(0, len(texts), MAX_BATCH_SIZE):
+            chunk = texts[start : start + MAX_BATCH_SIZE]
+            embeddings.extend(self._embedding_service.embed(chunk))
+        return embeddings
+
     def _assign_single_narrative(
         self,
         article_id: Any,
+        narrative: str,
         embedding: list[float],
         seen_at: datetime,
         stats: dict[str, int],

@@ -352,6 +352,66 @@ class ArticleRepository:
             for row in rows
         ]
 
+    def list_theme_assignment_candidates(
+        self,
+        *,
+        limit: int,
+        after_published_at: datetime | None = None,
+        after_id: Any | None = None,
+        start_published_at: datetime | None = None,
+        end_published_at: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """List keep=true processed articles sorted by published_at for chronological assignment."""
+        if limit <= 0:
+            return []
+
+        query = text(
+            """
+            select
+              a.id as article_id,
+              a.published_at,
+              a.metadata
+            from articles a
+            where a.published_at is not null
+              and a.metadata ? 'text_processing'
+              and coalesce((a.metadata->'text_processing'->>'keep')::boolean, true) = true
+              and (
+                cast(:start_published_at as timestamptz) is null
+                or a.published_at >= cast(:start_published_at as timestamptz)
+              )
+              and (
+                cast(:end_published_at as timestamptz) is null
+                or a.published_at <= cast(:end_published_at as timestamptz)
+              )
+              and (
+                cast(:after_published_at as timestamptz) is null
+                or a.published_at > cast(:after_published_at as timestamptz)
+                or (
+                  a.published_at = cast(:after_published_at as timestamptz)
+                  and a.id > cast(:after_id as uuid)
+                )
+              )
+            order by a.published_at asc, a.id asc
+            limit :limit
+            """
+        )
+        params = {
+            "limit": int(limit),
+            "after_published_at": after_published_at,
+            "after_id": str(after_id) if after_id else None,
+            "start_published_at": start_published_at,
+            "end_published_at": end_published_at,
+        }
+        rows = self._session.execute(query, params).mappings().all()
+        return [
+            {
+                "article_id": row["article_id"],
+                "published_at": row["published_at"],
+                "metadata": row["metadata"] if isinstance(row["metadata"], dict) else {},
+            }
+            for row in rows
+        ]
+
     def _to_row(self, article: dict[str, Any]) -> dict[str, Any]:
         source = article.get("source")
         source_name = self._to_optional_str(article.get("source_name")) or "unknown"

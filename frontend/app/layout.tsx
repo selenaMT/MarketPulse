@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Sora } from "next/font/google";
 import "./globals.css";
+import { AuthProvider } from "./contexts/AuthContext";
 
 const sora = Sora({
   variable: "--font-sora",
@@ -31,7 +32,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={bodyClasses}>{children}</body>
+      <body className={bodyClasses}>
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   );
 }

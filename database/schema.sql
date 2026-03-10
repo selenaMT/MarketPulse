@@ -74,6 +74,15 @@ as $$
   limit greatest(match_count, 1);
 $$;
 
+create table if not exists users (
+  id uuid primary key default gen_random_uuid(),
+  email text not null unique,
+  hashed_password text not null,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists themes (
   id uuid primary key default gen_random_uuid(),
   slug text not null unique,

@@ -50,7 +50,7 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg p-6 w-full max-w-md mx-4">
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold">
+          <h2 className="text-xl font-semibold text-gray-900">
             {isLogin ? "Sign In" : "Sign Up"}
           </h2>
           <button
@@ -71,7 +71,7 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
               id="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
               required
             />
           </div>
@@ -85,7 +85,7 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
               id="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900"
               required
               minLength={8}
             />

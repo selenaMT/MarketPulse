@@ -2,6 +2,24 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+type ChatSource = {
+  index: number;
+  article_id: string;
+  canonical_url: string;
+  title: string | null;
+  published_at: string | null;
+  source_name: string;
+  similarity: number;
+};
+
+type ChatState = {
+  isLoading: boolean;
+  error: string | null;
+  answer: string;
+  sources: ChatSource[];
+  lastQuery: string;
+};
+
 type SearchResult = {
   article_id: string;
   canonical_url: string;
@@ -88,6 +106,10 @@ const DEFAULT_LIMIT = 8;
 const MAX_LIMIT = 20;
 
 export default function Home() {
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatQuery, setChatQuery] = useState(
+    "What are the main macro themes driving markets this week?"
+  );
   const [keywords, setKeywords] = useState("inflation cooling in the US labor market");
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [sourceInput, setSourceInput] = useState("");
@@ -97,6 +119,13 @@ export default function Home() {
   const [isSourceDropdownOpen, setIsSourceDropdownOpen] = useState(false);
   const [minPublishedAt, setMinPublishedAt] = useState("");
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
+  const [chat, setChat] = useState<ChatState>({
+    isLoading: false,
+    error: null,
+    answer: "",
+    sources: [],
+    lastQuery: "",
+  });
   const [search, setSearch] = useState<SearchState>({
     isLoading: false,
     error: null,
@@ -278,6 +307,64 @@ export default function Home() {
     const normalized = sourceName.trim().toLowerCase();
     setSelectedSources((prev) => prev.filter((source) => source.trim().toLowerCase() !== normalized));
     setIsSourceDropdownOpen(true);
+  }
+
+  async function onChatSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedQuery = chatQuery.trim();
+    if (!trimmedQuery) {
+      setChat((prev) => ({ ...prev, error: "Please enter a macro question." }));
+      return;
+    }
+
+    setChat((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+      lastQuery: trimmedQuery,
+    }));
+
+    const payload: {
+      query: string;
+      retrieval_limit: number;
+      min_published_at?: string;
+      source_names?: string[];
+    } = {
+      query: trimmedQuery,
+      retrieval_limit: Math.min(limit, 5),
+    };
+
+    if (selectedSources.length > 0) payload.source_names = selectedSources;
+    if (minPublishedAt) payload.min_published_at = new Date(minPublishedAt).toISOString();
+
+    try {
+      const response = await fetch("/api/chat/answer", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        const detail = result?.detail ?? "Chat request failed.";
+        throw new Error(String(detail));
+      }
+
+      setChat((prev) => ({
+        ...prev,
+        isLoading: false,
+        answer: typeof result?.answer === "string" ? result.answer : "",
+        sources: Array.isArray(result?.sources) ? result.sources : [],
+      }));
+    } catch (error) {
+      setChat((prev) => ({
+        ...prev,
+        isLoading: false,
+        answer: "",
+        sources: [],
+        error: error instanceof Error ? error.message : "Unknown error occurred.",
+      }));
+    }
   }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -499,6 +586,144 @@ export default function Home() {
           </div>
         </section>
       </main>
+
+      <div className="fixed right-4 bottom-4 z-50 sm:right-6 sm:bottom-6">
+        {isChatOpen ? (
+          <section className="card fade-in-up mb-4 w-[calc(100vw-2rem)] max-w-[390px] overflow-hidden">
+            <div className="bg-[linear-gradient(135deg,#3d2512_0%,#88542a_44%,#ff9b54_100%)] px-5 py-4 text-white">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-mono text-xs uppercase tracking-[0.22em] text-white/70">
+                    Analyst Copilot
+                  </p>
+                  <h2 className="mt-1 text-lg font-semibold">Ask MarketPulse</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsChatOpen(false)}
+                  className="rounded-full border border-white/20 bg-white/10 px-2.5 py-1 text-sm font-semibold text-white/86 transition hover:bg-white/16"
+                  aria-label="Close chatbot"
+                >
+                  x
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-[70vh] overflow-y-auto px-4 py-4">
+              <form onSubmit={onChatSubmit} className="grid gap-3">
+                <label>
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                    What Do You Have In Mind Today?
+                  </span>
+                  <textarea
+                    value={chatQuery}
+                    onChange={(event) => setChatQuery(event.target.value)}
+                    rows={4}
+                    className="w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2.5 text-sm text-[var(--ink)] outline-none transition placeholder:text-[color:rgba(155,177,185,0.7)] focus:border-[var(--warm)] focus:ring-2 focus:ring-[var(--warm-soft)]"
+                    placeholder="e.g. Why are yields rising and what themes are driving the move?"
+                  />
+                </label>
+
+                <div>
+                  <button
+                    type="submit"
+                    disabled={chat.isLoading}
+                    className="inline-flex items-center rounded-full border border-[#b66d34] bg-[var(--warm)] px-4 py-2.5 text-sm font-semibold text-[#2e1304] transition hover:bg-[#ffac70] disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {chat.isLoading ? "Generating..." : "Ask Chatbot"}
+                  </button>
+                </div>
+              </form>
+
+              <div className="mt-4 space-y-4">
+                {chat.error ? (
+                  <div className="rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+                    {chat.error}
+                  </div>
+                ) : null}
+
+                {chat.isLoading ? (
+                  <div className="space-y-3">
+                    <div className="h-20 animate-pulse rounded-xl border border-[var(--edge)] bg-[var(--paper-soft)]" />
+                    <div className="h-20 animate-pulse rounded-xl border border-[var(--edge)] bg-[var(--paper-soft)]" />
+                  </div>
+                ) : null}
+
+                {!chat.isLoading && !chat.error && !chat.answer ? (
+                  <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-6 text-center text-sm text-[var(--muted)]">
+                    Ask a question to open a grounded macro answer.
+                  </div>
+                ) : null}
+
+                {!chat.isLoading && chat.answer ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                        {chat.lastQuery ? `Question: "${chat.lastQuery}"` : "Latest answer"}
+                      </p>
+                      <span className="rounded-full bg-[var(--warm-soft)] px-2.5 py-1 font-mono text-[11px] text-[var(--warm)]">
+                        grounded
+                      </span>
+                    </div>
+
+                    <article className="rounded-2xl border border-[color:rgba(255,155,84,0.18)] bg-[linear-gradient(180deg,rgba(255,155,84,0.10),rgba(255,155,84,0.03))] px-4 py-4 text-sm leading-7 whitespace-pre-wrap text-[var(--ink)]">
+                      {chat.answer}
+                    </article>
+
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                        Supporting Sources
+                      </h3>
+                      <div className="mt-3 space-y-3">
+                        {chat.sources.map((source) => (
+                          <article
+                            key={source.article_id}
+                            className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <span className="font-mono text-xs text-[var(--muted)]">
+                                [{source.index}] {source.source_name}
+                              </span>
+                              <span className="rounded-full bg-[var(--accent-soft)] px-2.5 py-1 font-mono text-xs text-[var(--accent)]">
+                                score {source.similarity.toFixed(3)}
+                              </span>
+                            </div>
+                            <h4 className="mt-2 text-sm font-semibold text-[var(--ink)]">
+                              {source.title ?? "(untitled)"}
+                            </h4>
+                            <p className="mt-2 text-xs text-[var(--muted)]">
+                              {source.published_at
+                                ? new Date(source.published_at).toLocaleString()
+                                : "Publish time unknown"}
+                            </p>
+                            <a
+                              href={source.canonical_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-3 inline-block text-sm font-medium text-[var(--warm)] underline decoration-[color:rgba(255,155,84,0.5)] decoration-2 underline-offset-3"
+                            >
+                              Open cited article
+                            </a>
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={() => setIsChatOpen((current) => !current)}
+          className="flex h-16 w-16 items-center justify-center rounded-full border border-[#b66d34] bg-[linear-gradient(135deg,#88542a_0%,#ff9b54_100%)] text-[#2e1304] shadow-[0_18px_40px_rgba(0,0,0,0.38)] transition hover:scale-[1.03] hover:shadow-[0_22px_50px_rgba(0,0,0,0.42)]"
+          aria-label={isChatOpen ? "Hide chatbot" : "Open chatbot"}
+        >
+          <span className="font-mono text-2xl font-semibold">?</span>
+        </button>
+      </div>
     </div>
   );
 }

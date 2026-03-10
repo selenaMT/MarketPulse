@@ -14,8 +14,8 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MarketPulse | Semantic News Search",
-  description: "Search macroeconomic news articles using semantic keyword similarity.",
+  title: "MarketPulse | Macro Chat And Search",
+  description: "Ask macro questions and search news articles using grounded semantic retrieval.",
 };
 
 const bodyClasses = [

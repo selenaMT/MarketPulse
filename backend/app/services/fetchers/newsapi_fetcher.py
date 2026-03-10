@@ -1,16 +1,6 @@
-from pathlib import Path
-from dotenv import load_dotenv
 import os
 import requests
 
-# load .env from backend root
-env_path = Path(__file__).resolve().parents[3] / ".env"
-load_dotenv(env_path)
-
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-NEWS_API_URL = "https://newsapi.org/v2/everything"
-
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 NEWS_API_URL = "https://newsapi.org/v2/everything"
 
 
@@ -23,8 +13,9 @@ def fetch_news(
     page_size: int = 20,
     page: int = 1,
 ):
-    if not NEWS_API_KEY:
-        raise ValueError("NEWS_API_KEY not found in .env")
+    news_api_key = os.getenv("NEWS_API_KEY")
+    if not news_api_key:
+        raise ValueError("NEWS_API_KEY not found in environment")
 
     params = {
         "q": query,
@@ -34,7 +25,7 @@ def fetch_news(
         "sortBy": sort_by,
         "pageSize": page_size,
         "page": page,
-        "apiKey": NEWS_API_KEY,
+        "apiKey": news_api_key,
     }
 
     response = requests.get(NEWS_API_URL, params=params, timeout=30)

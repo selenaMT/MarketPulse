@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "./contexts/AuthContext";
+import AuthModal from "./components/AuthModal";
 
 type ChatSource = {
   index: number;
@@ -110,6 +112,8 @@ export default function Home() {
   const [chatQuery, setChatQuery] = useState(
     "What are the main macro themes driving markets this week?"
   );
+  const { user, logout, isLoading: authLoading } = useAuth();
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [keywords, setKeywords] = useState("inflation cooling in the US labor market");
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [sourceInput, setSourceInput] = useState("");
@@ -401,8 +405,35 @@ export default function Home() {
       <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
         <section className="card mb-6">
           <div className="bg-[linear-gradient(120deg,#123c46_0%,#1f9d85_52%,#35c5aa_100%)] px-6 py-7 text-white sm:px-8">
+            <div className="flex justify-between items-start mb-4">
+              <div>
             <h1 className="text-3xl font-semibold sm:text-4xl">Theme Intelligence + Semantic Search</h1>
             <p className="mt-3 max-w-2xl text-sm text-white/85 sm:text-base">
+                            </div>
+              <div className="flex items-center gap-2">
+                {authLoading ? (
+                  <div className="text-white/72 text-sm">Loading...</div>
+                ) : user ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-white/85 text-sm">Welcome, {user.email}</span>
+                    <button
+                      onClick={logout}
+                      className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-sm transition"
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setIsAuthModalOpen(true)}
+                    className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-sm transition"
+                  >
+                    Sign In
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="max-w-2xl text-sm leading-relaxed text-white/85 sm:text-base">
               Track hot themes, monitor theme evolution, and inspect supporting articles.
             </p>
           </div>
@@ -586,7 +617,7 @@ export default function Home() {
           </div>
         </section>
       </main>
-
+       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       <div className="fixed right-4 bottom-4 z-50 sm:right-6 sm:bottom-6">
         {isChatOpen ? (
           <section className="card fade-in-up mb-4 w-[calc(100vw-2rem)] max-w-[390px] overflow-hidden">

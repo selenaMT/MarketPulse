@@ -11,6 +11,9 @@ langchain-experimental>=0.4.1,<0.5.0
 pyvis==0.3.2
 fastapi==0.116.1
 uvicorn==0.35.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
 
 # Test dependencies
 pytest==9.0.2

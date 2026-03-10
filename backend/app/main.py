@@ -6,21 +6,43 @@ from collections.abc import Generator
 from datetime import datetime
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.models.user import User
 from app.pipelines.theme_management_pipeline import ThemeManagementPipeline
 from app.repositories.article_repository import ArticleRepository
+from app.repositories.user_repository import UserRepository
 from app.repositories.theme_repository import ThemeRepository
 from app.services.article_search_service import ArticleSearchService
 from app.services.chat_service import ChatService
 from app.services.embedding_service import EmbeddingService
+from app.utils.auth import Token, TokenData, create_access_token, get_password_hash, verify_password, verify_token
 from app.services.theme_management_service import ThemeManagementService
 
 app = FastAPI(title="MarketPulse API", version="0.1.0")
 
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Frontend URLs
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+security = HTTPBearer()
+
+from fastapi import FastAPI
+
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello World"}
 
 class SemanticSearchResponseItem(BaseModel):
     article_id: str
@@ -185,6 +207,21 @@ class ThemeRecommendationResponseItem(BaseModel):
     updated_at: datetime
 
 
+class UserCreate(BaseModel):
+    email: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=8)
+
+
+class UserLogin(BaseModel):
+    email: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    is_active: bool
+
 def get_db_session() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
@@ -192,6 +229,27 @@ def get_db_session() -> Generator[Session, None, None]:
     finally:
         session.close()
 
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    session: Session = Depends(get_db_session),
+) -> User:
+    """Get the current authenticated user."""
+    token_data = verify_token(credentials.credentials)
+    if token_data is None or token_data.email is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_repo = UserRepository(session)
+    user = user_repo.get_user_by_email(token_data.email)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
 
 @app.get("/health")
 def healthcheck() -> dict[str, str]:
@@ -253,6 +311,45 @@ def list_article_sources(session: Session = Depends(get_db_session)) -> list[Sou
         for row in rows
     ]
 
+@app.post("/auth/register", response_model=UserResponse)
+def register_user(user_data: UserCreate, session: Session = Depends(get_db_session)) -> UserResponse:
+    """Register a new user."""
+    user_repo = UserRepository(session)
+    existing_user = user_repo.get_user_by_email(user_data.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
+    hashed_password = get_password_hash(user_data.password)
+    user = user_repo.create_user(email=user_data.email, hashed_password=hashed_password)
+    return UserResponse(id=str(user.id), email=user.email, is_active=user.is_active)
+
+
+@app.post("/auth/login", response_model=Token)
+def login_user(user_data: UserLogin, session: Session = Depends(get_db_session)) -> Token:
+    """Authenticate a user and return a JWT token."""
+    user_repo = UserRepository(session)
+    user = user_repo.get_user_by_email(user_data.email)
+    if not user or not verify_password(user_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user",
+        )
+    access_token = create_access_token(data={"sub": user.email})
+    return Token(access_token=access_token, token_type="bearer")
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def get_current_user_info(current_user: User = Depends(get_current_user)) -> UserResponse:
+    """Get current user information."""
+    return UserResponse(id=str(current_user.id), email=current_user.email, is_active=current_user.is_active)
 
 @app.post("/chat/answer", response_model=ChatAnswerResponse)
 def answer_chat(

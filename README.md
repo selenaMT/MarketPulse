@@ -202,6 +202,18 @@ DATABASE_URL=postgresql+psycopg://<user>:<password>@<host>:<port>/postgres?sslmo
 Notes:
 - Use Supabase Session Pooler URI if direct DB host is not reachable on your network.
 - Keep `sslmode=require`.
+# optional JWT secret used by the auth system
+SECRET_KEY=your-super-secret-jwt-key
+```
+
+### 2) Authentication
+The backend currently exposes simple email/password authentication endpoints backed by JWT tokens. Use them for user registration or to protect future API features.
+
+- `POST /auth/register` – register a new user (body: `email`, `password`)
+- `POST /auth/login` – obtain a bearer token (body: `email`, `password`)
+- `GET /auth/me` – retrieve information about the current user; requires `Authorization: Bearer <token>` header
+
+The frontend stores the access token in `localStorage` and attaches it automatically. Users can sign in, register, and sign out through the UI.
 
 ### 2) Install backend dependencies
 

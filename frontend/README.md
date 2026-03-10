@@ -20,12 +20,13 @@ The proxy forwards requests to backend FastAPI:
 
 ## Backend + Frontend setup
 
+### Option 1: Local development (requires Node.js installed)
+
 1) Start backend API (from `backend/`):
 
 ```bash
 uvicorn app.main:app --reload
 ```
-
 2) (Optional) Set backend base URL for the proxy in `frontend/.env.local`:
 
 ```env
@@ -37,8 +38,23 @@ MARKETPULSE_API_BASE_URL=http://127.0.0.1:8000
 ```bash
 npm run dev
 ```
+### Option 2: Docker development (recommended if Node.js not installed locally)
+
+1) Start both services with Docker Compose (from project root):
+
+```bash
+docker-compose up --build
+```
+
+This will:
+- Build and run the backend container with live reload
+- Build and run the frontend container with npm install and dev server
+- Mount source code volumes for live development
 
 Open `http://localhost:3000`.
+
+### Authentication
+The UI includes sign‑in and sign‑out controls in the header. Users may register a new account or log in with an existing email/password; the token is stored in `localStorage` and automatically sent with authenticated requests to the backend. Logging out clears the token.
 
 ## Current UI scope
 

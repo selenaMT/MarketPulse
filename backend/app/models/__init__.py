@@ -6,10 +6,12 @@ from app.models.embedding import (
     EmbeddingUsage,
     EmbeddingVector,
 )
+from app.models.user import User
 
 __all__ = [
     "EmbeddingRequest",
     "EmbeddingResponse",
     "EmbeddingUsage",
     "EmbeddingVector",
+    "User",
 ]

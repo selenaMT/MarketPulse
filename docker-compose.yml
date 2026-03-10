@@ -8,9 +8,13 @@ services:
       - "8000:8000"
     networks:
       - marketpulse_network
+    volumes:
+      - ./backend:/app
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
     container_name: nextjs_frontend
     ports:
       - "3000:3000"
@@ -18,6 +22,9 @@ services:
       - backend
     networks:
       - marketpulse_network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     environment:
       NEXT_PUBLIC_MARKETPULSE_API_BASE_URL: http://backend:8000
 

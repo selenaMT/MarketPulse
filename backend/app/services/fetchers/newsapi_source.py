@@ -5,19 +5,17 @@ from typing import Any
 
 from newsapi import NewsApiClient
 
-DEFAULT_REPUTABLE_SOURCE_IDS: tuple[str, ...] = (
-    "bloomberg",
-    # "business-insider",
-    "cnbc",
-    "financial-times",
-    "fortune",
-    "the-wall-street-journal",
-    "bbc-news",
-    "reuters",
-    "associated-press",
-    "the-new-york-times",
-    "the-guardian-uk",
-    # "al-jazeera-english",
+DEFAULT_REPUTABLE_DOMAINS: tuple[str, ...] = (
+    "bloomberg.com",
+    #"fortune.com",
+    #"wsj.com",
+    "bbc.co.uk",
+    "apnews.com",
+    "cnbc.com",
+    "cnn.com",
+    "marketwatch.com",
+    "washingtonpost.com",
+    "straitstimes.com",
 )
 
 
@@ -28,13 +26,13 @@ class NewsApiSource:
         self,
         api_key: str,
         client: NewsApiClient | None = None,
-        default_source_ids: tuple[str, ...] = DEFAULT_REPUTABLE_SOURCE_IDS,
+        default_domains: tuple[str, ...] = DEFAULT_REPUTABLE_DOMAINS,
     ) -> None:
         if not api_key:
             raise ValueError("NEWS_API_KEY is required")
 
         self._client = client or NewsApiClient(api_key=api_key)
-        self._default_sources = ",".join(default_source_ids)
+        self._default_domains = ",".join(default_domains)
 
     def fetch(
         self,
@@ -58,22 +56,22 @@ class NewsApiSource:
         Includes all official query params for this endpoint and forwards only
         the parameters supported by the installed SDK version.
         """
-        # NewsAPI does not allow combining `sources` with domain filters.
-        effective_sources = sources
+        # Default to reputable domains when no explicit source/domain filter is provided.
+        effective_domains = domains
         if (
-            effective_sources is None
-            and domains is None
+            sources is None
+            and effective_domains is None
             and exclude_domains is None
-            and self._default_sources
+            and self._default_domains
         ):
-            effective_sources = self._default_sources
+            effective_domains = self._default_domains
 
         sdk_params = {
             "q": q,
             "search_in": search_in,       # some SDK versions support this
             "qintitle": q_in_title,       # some SDK versions use this name
-            "sources": effective_sources,
-            "domains": domains,
+            "sources": sources,
+            "domains": effective_domains,
             "exclude_domains": exclude_domains,
             "from_param": from_param,
             "to": to,
@@ -97,7 +95,8 @@ class NewsApiSource:
                 f"page={filtered_params.get('page')}, "
                 f"page_size={filtered_params.get('page_size')}, "
                 f"sort_by={filtered_params.get('sort_by')}, "
-                f"sources={filtered_params.get('sources')}"
+                f"sources={filtered_params.get('sources')}, "
+                f"domains={filtered_params.get('domains')}"
             )
             raise RuntimeError(f"NewsAPI request failed (code={code}): {message}. {context}")
 

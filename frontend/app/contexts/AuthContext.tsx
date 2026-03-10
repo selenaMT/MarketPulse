@@ -20,37 +20,36 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return Boolean(localStorage.getItem("token"));
+  });
 
   useEffect(() => {
-    // Check if user is logged in on mount
     const token = localStorage.getItem("token");
-    if (token) {
-      // Verify token by fetching user info
-      fetch("/api/auth/me", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+    if (!token) return;
+
+    fetch("/api/auth/me", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((res) => {
+        if (res.ok) {
+          return res.json();
+        } else {
+          throw new Error("Invalid token");
+        }
       })
-        .then((res) => {
-          if (res.ok) {
-            return res.json();
-          } else {
-            throw new Error("Invalid token");
-          }
-        })
-        .then((userData) => {
-          setUser(userData);
-        })
-        .catch(() => {
-          localStorage.removeItem("token");
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    } else {
-      setIsLoading(false);
-    }
+      .then((userData) => {
+        setUser(userData);
+      })
+      .catch(() => {
+        localStorage.removeItem("token");
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   }, []);
 
   const login = async (email: string, password: string) => {

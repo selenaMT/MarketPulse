@@ -60,34 +60,37 @@ def get_news(query):
     api_key = os.getenv("NEWS_API_KEY")
     news_api_url = (
         f"https://newsapi.org/v2/everything?"
-        f"q={query}&"
-        f"from={yesterday}&"
-        f"sortBy=popularity&"
-        f"apiKey={api_key}"
+        #f"q={query}&"
+        f"apiKey=41ff95c7093e452b883e3c5212301edf&"
+        f"domains=www.ft.com"
     )
+
+    print(news_api_url)
 
     res = requests.get(news_api_url)
     data = res.json()
     articles = data.get("articles", [])
 
+    print(articles[:10])
+
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     results = []
 
-    for i in range(0,len(articles)):
-        if articles[i]["description"] == None:
-            continue
+    # for i in range(0,len(articles)):
+    #     if articles[i]["description"] == None:
+    #         continue
 
-        response = client.embeddings.create(
-        input=articles[i]["description"],
-        model="text-embedding-3-small"
-        )
+    #     response = client.embeddings.create(
+    #     input=articles[i]["description"],
+    #     model="text-embedding-3-small"
+    #     )
 
-        extracted = {
-            "desc": articles[i]["description"],
-            "embeddings": response.data[0].embedding, 
-        }
-        results.append(extracted)
+    #     extracted = {
+    #         "desc": articles[i]["description"],
+    #         "embeddings": response.data[0].embedding, 
+    #     }
+    #     results.append(extracted)
 
 
     #     print(f"Processing article {i}")
@@ -102,7 +105,8 @@ def get_news(query):
         
 
 if __name__ == "__main__":
-    queries = ["Iran", "Crypto", "Economics", "Stocks", "Finance", "Inflation", "Policy"]
-    for query in queries:
-        news_embeddings = get_gdelt(query)
-        print(news_embeddings)
+    # queries = ["Iran", "Crypto", "Economics", "Stocks", "Finance", "Inflation", "Policy"]
+    # for query in queries:
+    #     news_embeddings = get_gdelt(query)
+    #     print(news_embeddings)
+    get_news("Economics")

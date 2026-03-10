@@ -243,12 +243,7 @@ Expected output includes:
 - `persisted_count`
 - optional `persistence_error` if DB write fails
 
-By default, ingestion also runs theme sync (assignment + snapshots + relations).
-To run theme sync manually:
-
-```bash
-python scripts/update_themes.py --assignment-limit 500
-```
+Theme processing is currently disabled in runtime code while a new theme solution is being rebuilt.
 
 ### 5) Verify rows in DB
 
@@ -275,14 +270,6 @@ Search with keywords:
 ```bash
 curl "http://127.0.0.1:8000/articles/semantic-search?keywords=inflation%20cooling&limit=5"
 
-Theme APIs:
-
-```bash
-curl "http://127.0.0.1:8000/themes/hot?limit=8&lookback_days=30"
-curl "http://127.0.0.1:8000/themes/<theme_slug_or_id>"
-curl "http://127.0.0.1:8000/themes/<theme_slug_or_id>/timeline?days=60"
-curl "http://127.0.0.1:8000/themes/<theme_slug_or_id>/related?related_limit=8&development_limit=8"
-```
 ```
 
 Or run the CLI:

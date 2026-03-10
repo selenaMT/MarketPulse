@@ -21,7 +21,7 @@ class NewsIngestionPipeline:
         fetchers: list[NewsApiSource],
         embedding_service: EmbeddingService,
         text_processing_service: TextProcessingService | None = None,
-        text_processing_max_workers: int = 10,
+        text_processing_max_workers: int = 15,
         article_repository: ArticleRepository | None = None,
     ) -> None:
         self._fetchers = fetchers

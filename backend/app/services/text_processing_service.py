@@ -218,7 +218,7 @@ SYSTEM_PROMPT = (
     "- Keep event factual, concise, ideally under 15 words.\n"
     "- If there is no clear policy implication, use market_tone='uncertain'.\n"
     "- If multiple descriptions are suitable for market_tone, choose the most appropriate and most informative one.\n"
-    "- narratives should contain 3-5 themes/narratives when possible. Be specific with the themes. For example, instead of saying 'fiscal policy', specify 'US raising interest rates due to recent inflation'.\n"
+    "- narratives should contain 3-5 themes/narratives when possible. Be specific with the themes. For example, instead of saying 'fiscal policy', specify 'US raising interest rates due to recent inflation'. Be contextual for each of the listed narratives.\n"
     "- If uncertain, narratives can be an empty list.\n"
     "- impact is a single integer from 0 to 100 measuring how significant the article is for financial, economic, business, market, or investment matters.\n"
     "- Score higher for major policies, major economies, systemically important companies, large cross-border events, or developments likely to influence broad markets.\n"

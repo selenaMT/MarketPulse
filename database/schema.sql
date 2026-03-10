@@ -323,6 +323,15 @@ create table if not exists theme_sync_runs (
 create index if not exists idx_theme_sync_runs_created_at
 on theme_sync_runs (created_at desc);
 
+create table if not exists users (
+  id uuid primary key default gen_random_uuid(),
+  email text not null unique,
+  hashed_password text not null,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 do $$
 begin
   if exists (

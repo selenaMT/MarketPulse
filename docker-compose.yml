@@ -1,40 +1,11 @@
-
-
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    container_name: postgres_db
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: marketpulse
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - marketpulse_network
-
   backend:
     build: ./backend
-    container_name: python_backend
-    ports:
-      - "8000:8000"
+    container_name: backend_app
     env_file:
       - .env
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/marketpulse
-    volumes:
-      - ./backend:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
+    ports:
+      - "8000:8000"
     networks:
       - marketpulse_network
 
@@ -43,16 +14,12 @@ services:
     container_name: nextjs_frontend
     ports:
       - "3000:3000"
-    # no volumes: use image contents only, avoiding any host file creation
     depends_on:
       - backend
     networks:
       - marketpulse_network
     environment:
       NEXT_PUBLIC_MARKETPULSE_API_BASE_URL: http://backend:8000
-
-volumes:
-  postgres_data:
 
 networks:
   marketpulse_network:

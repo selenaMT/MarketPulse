@@ -199,7 +199,7 @@ class NewsIngestionPipeline:
     def _embed_articles(self, articles: list[dict[str, Any]]) -> tuple[dict[int, list[float]], int]:
         candidates: list[tuple[int, str]] = []
         for idx, article in enumerate(articles):
-            text = self._article_to_text(article)
+            text = self._article_to_embedding_text(article)
             if text:
                 candidates.append((idx, text))
 
@@ -320,6 +320,22 @@ class NewsIngestionPipeline:
             text = (value or "").strip()
             if text:
                 parts.append(f"{label}: {text}")
+        return "\n".join(parts) if parts else None
+
+    @staticmethod
+    def _article_to_embedding_text(article: dict[str, Any]) -> str | None:
+        title = (article.get("title") or "").strip()
+        description = (article.get("description") or "").strip()
+        content = (article.get("content") or "").strip()
+
+        parts: list[str] = []
+        if title:
+            parts.append(f"Title: {title}")
+        if description:
+            parts.append(f"Description: {description}")
+            parts.append(f"Description: {description}")
+        if content:
+            parts.append(f"Content: {content}")
         return "\n".join(parts) if parts else None
 
     @staticmethod

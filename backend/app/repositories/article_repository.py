@@ -129,6 +129,59 @@ class ArticleRepository:
             for row in rows
         ]
 
+    def search_similar_for_chat(
+        self,
+        query_embedding: list[float],
+        limit: int = 5,
+        min_published_at: datetime | None = None,
+        source_name: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return similar articles with extra fields for grounded chat responses."""
+        similarity = (1 - Article.embedding.cosine_distance(query_embedding)).label("similarity")
+        query = (
+            select(
+                Article.id,
+                Article.canonical_url,
+                Article.title,
+                Article.description,
+                Article.content,
+                Article.published_at,
+                Article.source_name,
+                Article.region,
+                Article.metadata_json,
+                similarity,
+            )
+            .where(Article.embedding.is_not(None))
+            .order_by(Article.embedding.cosine_distance(query_embedding))
+            .limit(max(limit, 1))
+        )
+        if min_published_at is not None:
+            query = query.where(Article.published_at >= min_published_at)
+        normalized_sources = self._normalize_source_filters(
+            source_name=source_name,
+            source_names=source_names,
+        )
+        if normalized_sources:
+            query = query.where(Article.source_name.in_(normalized_sources))
+
+        rows = self._session.execute(query).all()
+        return [
+            {
+                "article_id": row.id,
+                "canonical_url": row.canonical_url,
+                "title": row.title,
+                "description": row.description,
+                "content": row.content,
+                "published_at": row.published_at,
+                "source_name": row.source_name,
+                "region": row.region,
+                "metadata": row.metadata_json or {},
+                "similarity": float(row.similarity),
+            }
+            for row in rows
+        ]
+
     def list_sources(self) -> list[dict[str, Any]]:
         """Return distinct article sources with document counts."""
         query = (

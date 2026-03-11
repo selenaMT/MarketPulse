@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import AuthModal from "./components/AuthModal";
 import { useAuth } from "./contexts/AuthContext";
@@ -68,6 +68,51 @@ type HotThemeState = {
   items: HotTheme[];
 };
 
+type WatchlistTheme = {
+  id: string;
+  slug: string;
+  canonical_label: string;
+  summary: string | null;
+  status: string;
+  discovery_method: string;
+  scope: string;
+  owner_user_id: string | null;
+  article_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  alerts_enabled: boolean | null;
+  watchlisted_at: string | null;
+};
+
+type WatchlistThemeArticle = {
+  article_id: string;
+  canonical_url: string;
+  title: string | null;
+  description: string | null;
+  published_at: string | null;
+  source_name: string;
+  similarity_score: number;
+  assignment_score: number;
+  assignment_method: string;
+  matched_at: string | null;
+};
+
+type WatchlistThemeArticlesState = {
+  isLoading: boolean;
+  isOpen: boolean;
+  hasLoaded: boolean;
+  error: string | null;
+  items: WatchlistThemeArticle[];
+};
+
+type WatchlistState = {
+  isLoading: boolean;
+  error: string | null;
+  items: WatchlistTheme[];
+};
+
 const DEFAULT_LIMIT = 8;
 const MAX_LIMIT = 20;
 
@@ -80,7 +125,7 @@ export default function Home() {
   const [chatInput, setChatInput] = useState("");
   const { user, logout, isLoading: authLoading } = useAuth();
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [keywords, setKeywords] = useState("inflation cooling in the US labor market");
+  const [keywords, setKeywords] = useState("");
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [sourceInput, setSourceInput] = useState("");
   const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
@@ -88,6 +133,7 @@ export default function Home() {
   const [sourcesError, setSourcesError] = useState<string | null>(null);
   const [isSourceDropdownOpen, setIsSourceDropdownOpen] = useState(false);
   const [minPublishedAt, setMinPublishedAt] = useState("");
+  const [maxPublishedAt, setMaxPublishedAt] = useState("");
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const [chat, setChat] = useState<ChatState>({
     isLoading: false,
@@ -105,6 +151,19 @@ export default function Home() {
     error: null,
     items: [],
   });
+  const [watchlist, setWatchlist] = useState<WatchlistState>({
+    isLoading: false,
+    error: null,
+    items: [],
+  });
+  const [watchlistArticles, setWatchlistArticles] = useState<Record<string, WatchlistThemeArticlesState>>({});
+  const [watchlistActionThemeId, setWatchlistActionThemeId] = useState<string | null>(null);
+  const [isCreatingCustomWatchlistTheme, setIsCreatingCustomWatchlistTheme] = useState(false);
+  const [watchlistFormError, setWatchlistFormError] = useState<string | null>(null);
+  const [customWatchlistLabel, setCustomWatchlistLabel] = useState("");
+  const [customWatchlistDescription, setCustomWatchlistDescription] = useState("");
+  const [isFiltersOpen, setIsFiltersOpen] = useState(false);
+  const [isResultsCardHidden, setIsResultsCardHidden] = useState(false);
   const sourceDropdownRef = useRef<HTMLDivElement | null>(null);
   const chatTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const latestAssistantMessageRef = useRef<HTMLDivElement | null>(null);
@@ -208,10 +267,256 @@ export default function Home() {
     });
   }, [selectedSources, sourceInput, sourceOptions]);
 
+  const filteredSearchResults = useMemo(() => {
+    if (!maxPublishedAt) return search.results;
+    const maxTimestamp = new Date(maxPublishedAt).getTime();
+    if (Number.isNaN(maxTimestamp)) return search.results;
+    return search.results.filter((result) => {
+      if (!result.published_at) return false;
+      const publishedTimestamp = new Date(result.published_at).getTime();
+      return !Number.isNaN(publishedTimestamp) && publishedTimestamp <= maxTimestamp;
+    });
+  }, [maxPublishedAt, search.results]);
+
   const topScore = useMemo(() => {
-    if (search.results.length === 0) return 0;
-    return Math.max(...search.results.map((result) => result.similarity));
-  }, [search.results]);
+    if (filteredSearchResults.length === 0) return 0;
+    return Math.max(...filteredSearchResults.map((result) => result.similarity));
+  }, [filteredSearchResults]);
+  const hasSearched = search.lastQuery.trim().length > 0;
+
+  const watchlistThemeIds = useMemo(() => new Set(watchlist.items.map((theme) => theme.id)), [watchlist.items]);
+
+  const buildAuthHeaders = useCallback((includeContentType: boolean): Record<string, string> | null => {
+    const token = typeof window === "undefined" ? null : localStorage.getItem("token");
+    if (!token) return null;
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    };
+    if (includeContentType) headers["Content-Type"] = "application/json";
+    return headers;
+  }, []);
+
+  const loadWatchlistThemes = useCallback(async () => {
+    const headers = buildAuthHeaders(false);
+    if (!headers) {
+      setWatchlist({ isLoading: false, error: "Please sign in to use watchlist.", items: [] });
+      return;
+    }
+    setWatchlist((prev) => ({ ...prev, isLoading: true, error: null }));
+    try {
+      const response = await fetch("/api/watchlist/themes?limit=50", {
+        method: "GET",
+        headers,
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(String(payload?.detail ?? "Cannot load watchlist themes."));
+      }
+      setWatchlist({
+        isLoading: false,
+        error: null,
+        items: Array.isArray(payload) ? payload : [],
+      });
+    } catch (error) {
+      setWatchlist({
+        isLoading: false,
+        error: error instanceof Error ? error.message : "Cannot load watchlist themes.",
+        items: [],
+      });
+    }
+  }, [buildAuthHeaders]);
+
+  useEffect(() => {
+    if (!user) {
+      setWatchlist({ isLoading: false, error: null, items: [] });
+      setWatchlistArticles({});
+      return;
+    }
+    void loadWatchlistThemes();
+  }, [user, loadWatchlistThemes]);
+
+  async function addThemeToWatchlist(themeId: string) {
+    if (!user) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    const headers = buildAuthHeaders(true);
+    if (!headers) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    setWatchlistActionThemeId(themeId);
+    setWatchlistFormError(null);
+    try {
+      const response = await fetch("/api/watchlist/themes", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ theme_id: themeId, alerts_enabled: true }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(String(payload?.detail ?? "Cannot add theme to watchlist."));
+      }
+      await loadWatchlistThemes();
+    } catch (error) {
+      setWatchlistFormError(error instanceof Error ? error.message : "Cannot add theme to watchlist.");
+    } finally {
+      setWatchlistActionThemeId(null);
+    }
+  }
+
+  async function createCustomWatchlistTheme(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!user) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    const headers = buildAuthHeaders(true);
+    if (!headers) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    const canonicalLabel = customWatchlistLabel.trim();
+    if (!canonicalLabel) {
+      setWatchlistFormError("Custom theme label is required.");
+      return;
+    }
+
+    const payload: {
+      canonical_label: string;
+      description?: string;
+      alerts_enabled: boolean;
+    } = {
+      canonical_label: canonicalLabel,
+      alerts_enabled: true,
+    };
+
+    const normalizedDescription = customWatchlistDescription.trim();
+    if (normalizedDescription) payload.description = normalizedDescription;
+
+    setIsCreatingCustomWatchlistTheme(true);
+    setWatchlistFormError(null);
+    try {
+      const response = await fetch("/api/watchlist/themes", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(String(data?.detail ?? "Cannot create custom watchlist theme."));
+      }
+      setCustomWatchlistLabel("");
+      setCustomWatchlistDescription("");
+      await loadWatchlistThemes();
+    } catch (error) {
+      setWatchlistFormError(error instanceof Error ? error.message : "Cannot create custom watchlist theme.");
+    } finally {
+      setIsCreatingCustomWatchlistTheme(false);
+    }
+  }
+
+  async function removeWatchlistTheme(themeId: string) {
+    const headers = buildAuthHeaders(false);
+    if (!headers) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    setWatchlistActionThemeId(themeId);
+    setWatchlistFormError(null);
+    try {
+      const response = await fetch(`/api/watchlist/themes/${encodeURIComponent(themeId)}`, {
+        method: "DELETE",
+        headers,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(String(payload?.detail ?? "Cannot remove watchlist theme."));
+      }
+      setWatchlist((prev) => ({
+        ...prev,
+        items: prev.items.filter((item) => item.id !== themeId),
+      }));
+      setWatchlistArticles((prev) => {
+        const next = { ...prev };
+        delete next[themeId];
+        return next;
+      });
+    } catch (error) {
+      setWatchlistFormError(error instanceof Error ? error.message : "Cannot remove watchlist theme.");
+    } finally {
+      setWatchlistActionThemeId(null);
+    }
+  }
+
+  async function toggleWatchlistThemeArticles(themeId: string) {
+    const current = watchlistArticles[themeId];
+    if (current?.isOpen) {
+      setWatchlistArticles((prev) => ({
+        ...prev,
+        [themeId]: { ...prev[themeId], isOpen: false },
+      }));
+      return;
+    }
+
+    if (current?.hasLoaded) {
+      setWatchlistArticles((prev) => ({
+        ...prev,
+        [themeId]: { ...prev[themeId], isOpen: true },
+      }));
+      return;
+    }
+
+    const headers = buildAuthHeaders(false);
+    if (!headers) {
+      setIsAuthModalOpen(true);
+      return;
+    }
+    setWatchlistArticles((prev) => ({
+      ...prev,
+      [themeId]: {
+        isLoading: true,
+        isOpen: true,
+        hasLoaded: false,
+        error: null,
+        items: [],
+      },
+    }));
+    try {
+      const response = await fetch(`/api/watchlist/themes/${encodeURIComponent(themeId)}/articles?limit=30`, {
+        method: "GET",
+        headers,
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(String(payload?.detail ?? "Cannot load watchlist articles."));
+      }
+      setWatchlistArticles((prev) => ({
+        ...prev,
+        [themeId]: {
+          isLoading: false,
+          isOpen: true,
+          hasLoaded: true,
+          error: null,
+          items: Array.isArray(payload) ? payload : [],
+        },
+      }));
+    } catch (error) {
+      setWatchlistArticles((prev) => ({
+        ...prev,
+        [themeId]: {
+          isLoading: false,
+          isOpen: true,
+          hasLoaded: true,
+          error: error instanceof Error ? error.message : "Cannot load watchlist articles.",
+          items: [],
+        },
+      }));
+    }
+  }
 
   function addSource(sourceName: string) {
     const normalized = sourceName.trim();
@@ -356,6 +661,7 @@ export default function Home() {
       setSearch((prev) => ({ ...prev, error: "Please enter at least one keyword." }));
       return;
     }
+    setIsResultsCardHidden(false);
     setSearch((prev) => ({ ...prev, isLoading: true, error: null, lastQuery: trimmedKeywords }));
     const params = new URLSearchParams({ keywords: trimmedKeywords, limit: String(limit) });
     for (const sourceName of selectedSources) params.append("source_names", sourceName);
@@ -380,12 +686,26 @@ export default function Home() {
 
   return (
     <div className="grain min-h-screen">
-      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
-        <section className="card mb-6">
+      <main id="home" className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
+        <section id="semantic-search" className="card mb-6">
           <div className="bg-[linear-gradient(120deg,#123c46_0%,#1f9d85_52%,#35c5aa_100%)] px-6 py-7 text-white sm:px-8">
-            <div className="mb-4 flex items-start justify-between">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h1 className="text-3xl font-semibold sm:text-4xl">Semantic Search</h1>
+                <h1 className="mt-1 text-3xl font-semibold sm:text-4xl">MarketPulse</h1>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <a
+                    href="#home"
+                    className="rounded-full border border-white/28 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-white/92"
+                  >
+                    Home
+                  </a>
+                  <Link
+                    href="/chatbot"
+                    className="rounded-full border border-white/28 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-white/92"
+                  >
+                    Chatbot
+                  </Link>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 {authLoading ? (
@@ -411,204 +731,399 @@ export default function Home() {
               </div>
             </div>
             <p className="max-w-2xl text-sm leading-relaxed text-white/85 sm:text-base">
-              Semantic search and chat are active. Theme hotness below is ranked by linked article count.
+              Search themes semantically with a date/time range, monitor your profile watchlist, and track hot market themes.
             </p>
           </div>
+        </section>
+
+        <section className="card mb-6">
           <form onSubmit={onSubmit} className="grid gap-4 px-5 py-5 sm:grid-cols-2 sm:px-8 sm:py-7">
-            <label className="sm:col-span-2">
-              <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                Keyword Query
-              </span>
-              <textarea
-                value={keywords}
-                onChange={(event) => setKeywords(event.target.value)}
-                rows={3}
-                className="w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2.5 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
-              />
-            </label>
-            <div ref={sourceDropdownRef} className="relative">
-              <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                Source Filter
-              </span>
-              <div className="min-h-[44px] w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)]">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {selectedSources.map((source) => (
-                    <span
-                      key={source}
-                      className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-2 py-0.5 text-xs text-[var(--ink)]"
-                    >
-                      <span>{source}</span>
-                      <button
-                        type="button"
-                        onClick={() => removeSource(source)}
-                        className="font-semibold leading-none text-[var(--muted)]"
-                      >
-                        x
-                      </button>
-                    </span>
-                  ))}
-                  <input
-                    value={sourceInput}
-                    onChange={(event) => {
-                      setSourceInput(event.target.value);
-                      setIsSourceDropdownOpen(true);
-                    }}
-                    onFocus={() => setIsSourceDropdownOpen(true)}
-                    className="min-w-[180px] flex-1 bg-transparent py-0.5 text-sm text-[var(--ink)] outline-none"
-                    placeholder="Type to search sources..."
-                  />
-                </div>
-              </div>
-              {isSourceDropdownOpen ? (
-                <div className="mt-1.5 max-h-48 w-full overflow-y-auto rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-1.5 shadow-lg">
-                  {isSourcesLoading ? <p className="px-2 py-2 text-sm text-[var(--muted)]">Loading sources...</p> : null}
-                  {!isSourcesLoading && sourcesError ? (
-                    <p className="px-2 py-2 text-sm text-[var(--danger)]">{sourcesError}</p>
-                  ) : null}
-                  {!isSourcesLoading && !sourcesError && filteredSourceOptions.map((option) => (
-                    <button
-                      key={option.source_name}
-                      type="button"
-                      onClick={() => addSource(option.source_name)}
-                      className="mt-1 flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm text-[var(--ink)] hover:bg-[var(--paper-soft)]"
-                    >
-                      <span>{option.source_name}</span>
-                      <span className="font-mono text-xs text-[var(--muted)]">{option.article_count}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-            <label>
-              <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                Published After
-              </span>
-              <input
-                type="datetime-local"
-                value={minPublishedAt}
-                onChange={(event) => setMinPublishedAt(event.target.value)}
-                className="w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
-              />
-            </label>
-            <label className="sm:col-span-2">
-              <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                Result Limit: {limit}
-              </span>
-              <input
-                type="range"
-                min={1}
-                max={MAX_LIMIT}
-                value={limit}
-                onChange={(event) => setLimit(Number(event.target.value))}
-                className="w-full accent-[var(--accent)]"
-              />
-            </label>
             <div className="sm:col-span-2">
-              <button
-                type="submit"
-                disabled={search.isLoading}
-                className="inline-flex items-center rounded-full border border-[var(--accent-strong)] bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-[#052018]"
-              >
-                {search.isLoading ? "Searching..." : "Run Semantic Search"}
-              </button>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={keywords}
+                  onChange={(event) => setKeywords(event.target.value)}
+                  placeholder="Search articles semantically..."
+                  className="flex-1 rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2.5 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setIsFiltersOpen((current) => {
+                      const next = !current;
+                      if (!next) setIsSourceDropdownOpen(false);
+                      return next;
+                    })
+                  }
+                  className="inline-flex items-center justify-center rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--ink)]"
+                >
+                  {isFiltersOpen ? "Hide Filters" : "Filters"}
+                </button>
+                <button
+                  type="submit"
+                  disabled={search.isLoading}
+                  className="inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-[#052018]"
+                >
+                  {search.isLoading ? "Searching..." : "Search"}
+                </button>
+              </div>
             </div>
+            {isFiltersOpen ? (
+              <>
+                <div ref={sourceDropdownRef} className="relative">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                    Source Filter
+                  </span>
+                  <div className="min-h-[44px] w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)]">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {selectedSources.map((source) => (
+                        <span
+                          key={source}
+                          className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-2 py-0.5 text-xs text-[var(--ink)]"
+                        >
+                          <span>{source}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeSource(source)}
+                            className="font-semibold leading-none text-[var(--muted)]"
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
+                      <input
+                        value={sourceInput}
+                        onChange={(event) => {
+                          setSourceInput(event.target.value);
+                          setIsSourceDropdownOpen(true);
+                        }}
+                        onFocus={() => setIsSourceDropdownOpen(true)}
+                        className="min-w-[180px] flex-1 bg-transparent py-0.5 text-sm text-[var(--ink)] outline-none"
+                        placeholder="Type to search sources..."
+                      />
+                    </div>
+                  </div>
+                  {isSourceDropdownOpen ? (
+                    <div className="mt-1.5 max-h-48 w-full overflow-y-auto rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-1.5 shadow-lg">
+                      {isSourcesLoading ? <p className="px-2 py-2 text-sm text-[var(--muted)]">Loading sources...</p> : null}
+                      {!isSourcesLoading && sourcesError ? (
+                        <p className="px-2 py-2 text-sm text-[var(--danger)]">{sourcesError}</p>
+                      ) : null}
+                      {!isSourcesLoading && !sourcesError && filteredSourceOptions.map((option) => (
+                        <button
+                          key={option.source_name}
+                          type="button"
+                          onClick={() => addSource(option.source_name)}
+                          className="mt-1 flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm text-[var(--ink)] hover:bg-[var(--paper-soft)]"
+                        >
+                          <span>{option.source_name}</span>
+                          <span className="font-mono text-xs text-[var(--muted)]">{option.article_count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="space-y-3">
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                      Start Date/Time
+                    </span>
+                    <input
+                      type="datetime-local"
+                      value={minPublishedAt}
+                      onChange={(event) => setMinPublishedAt(event.target.value)}
+                      className="w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                      End Date/Time
+                    </span>
+                    <input
+                      type="datetime-local"
+                      value={maxPublishedAt}
+                      onChange={(event) => setMaxPublishedAt(event.target.value)}
+                      className="w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                    />
+                  </label>
+                </div>
+                <label className="sm:col-span-2">
+                  <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                    Result Limit: {limit}
+                  </span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={MAX_LIMIT}
+                    value={limit}
+                    onChange={(event) => setLimit(Number(event.target.value))}
+                    className="w-full accent-[var(--accent)]"
+                  />
+                </label>
+              </>
+            ) : null}
           </form>
         </section>
 
-        <section className="card mb-6 px-5 py-5 sm:px-7 sm:py-6">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-xl font-semibold text-[var(--ink)]">Theme Hotness</h2>
-            <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1 font-mono text-xs text-[var(--accent)]">
-              by article count
-            </span>
-          </div>
-          {hotThemes.error ? (
-            <div className="rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
-              {hotThemes.error}
+        {hasSearched && !isResultsCardHidden ? (
+          <section className="card mb-6 px-5 py-5 sm:px-7 sm:py-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold text-[var(--ink)]">Ranked Results</h2>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-[var(--warm-soft)] px-3 py-1 font-mono text-xs text-[var(--warm)]">
+                  Top score: {topScore.toFixed(3)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsResultsCardHidden(true)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] text-sm font-semibold text-[var(--muted)]"
+                  aria-label="Hide ranked results"
+                >
+                  x
+                </button>
+              </div>
             </div>
-          ) : null}
-          {hotThemes.isLoading ? (
-            <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
-              Loading hot themes...
+            {search.error ? (
+              <div className="rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+                {search.error}
+              </div>
+            ) : null}
+            {!search.isLoading && filteredSearchResults.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+                No results yet.
+              </div>
+            ) : null}
+            {!search.isLoading && filteredSearchResults.length > 0 ? (
+              <ol className="space-y-3">
+                {filteredSearchResults.map((result, index) => (
+                  <li key={result.article_id} className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="font-mono text-xs text-[var(--muted)]">#{index + 1}</span>
+                      <span className="rounded-full bg-[var(--accent-soft)] px-2.5 py-1 font-mono text-xs text-[var(--accent)]">
+                        score {result.similarity.toFixed(3)}
+                      </span>
+                    </div>
+                    <h3 className="text-base font-semibold text-[var(--ink)]">{result.title ?? "(untitled)"}</h3>
+                    <p className="mt-1 text-xs text-[var(--muted)]">
+                      {result.source_name} |{" "}
+                      {result.published_at ? new Date(result.published_at).toLocaleString() : "Publish time unknown"}
+                    </p>
+                    <a
+                      href={result.canonical_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-3 inline-block text-sm font-medium text-[var(--accent)] underline"
+                    >
+                      Open article
+                    </a>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </section>
+        ) : null}
+
+        <section className="mb-6 grid gap-6 lg:grid-cols-3">
+          <article className="card px-4 py-4 sm:px-5 sm:py-5 lg:order-2 lg:col-span-1">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold text-[var(--ink)]">Watchlist (Profile)</h2>
+              {user ? (
+                <button
+                  type="button"
+                  onClick={() => void loadWatchlistThemes()}
+                  disabled={watchlist.isLoading}
+                  className="rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {watchlist.isLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              ) : null}
             </div>
-          ) : null}
-          {!hotThemes.isLoading && !hotThemes.error && hotThemes.items.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
-              No ranked themes yet.
-            </div>
-          ) : null}
-          {!hotThemes.isLoading && !hotThemes.error && hotThemes.items.length > 0 ? (
-            <ol className="space-y-3">
-              {hotThemes.items.map((theme, index) => (
-                <li key={theme.id} className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4">
-                  <div className="mb-1 flex items-center justify-between gap-3">
-                    <span className="font-mono text-xs text-[var(--muted)]">#{index + 1}</span>
-                    <span className="rounded-full bg-[var(--warm-soft)] px-2.5 py-1 font-mono text-xs text-[var(--warm)]">
-                      {theme.article_count} articles
+
+            {!user ? (
+              <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-6">
+                <p className="text-sm text-[var(--muted)]">Sign in to use your profile watchlist.</p>
+                <button
+                  type="button"
+                  onClick={() => setIsAuthModalOpen(true)}
+                  className="mt-3 inline-flex items-center rounded-full border border-[var(--accent-strong)] bg-[var(--accent)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-[#052018]"
+                >
+                  Sign In
+                </button>
+              </div>
+            ) : (
+              <>
+                <form onSubmit={createCustomWatchlistTheme} className="mb-4 grid gap-3 rounded-xl border border-[var(--edge)] bg-[var(--paper-soft)] p-4">
+                  <label>
+                    <span className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
+                      Add Custom Theme
                     </span>
-                  </div>
-                  <h3 className="text-base font-semibold text-[var(--ink)]">{theme.canonical_label}</h3>
-                  <p className="mt-1 text-xs text-[var(--muted)]">
-                    status: {theme.status} | last seen:{" "}
-                    {theme.last_seen_at ? new Date(theme.last_seen_at).toLocaleString() : "unknown"}
-                  </p>
-                  <Link
-                    href={`/themes/${encodeURIComponent(theme.id)}`}
-                    className="mt-3 inline-flex items-center rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--ink)] hover:border-[var(--accent)]"
+                    <input
+                      value={customWatchlistLabel}
+                      onChange={(event) => setCustomWatchlistLabel(event.target.value)}
+                      placeholder="Theme name"
+                      className="w-full rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                    />
+                  </label>
+                  <input
+                    value={customWatchlistDescription}
+                    onChange={(event) => setCustomWatchlistDescription(event.target.value)}
+                    placeholder="Description (optional)"
+                    className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] px-3 py-2 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent-soft)]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isCreatingCustomWatchlistTheme}
+                    className="inline-flex items-center rounded-full border border-[var(--accent-strong)] bg-[var(--accent)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-[#052018] disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    View Timeline
-                  </Link>
-                </li>
-              ))}
-            </ol>
-          ) : null}
+                    {isCreatingCustomWatchlistTheme ? "Creating..." : "Create + Watch"}
+                  </button>
+                </form>
+
+                {watchlistFormError ? (
+                  <div className="mb-4 rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+                    {watchlistFormError}
+                  </div>
+                ) : null}
+                {watchlist.error ? (
+                  <div className="mb-4 rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+                    {watchlist.error}
+                  </div>
+                ) : null}
+                {watchlist.isLoading ? (
+                  <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+                    Loading watchlist...
+                  </div>
+                ) : null}
+                {!watchlist.isLoading && watchlist.items.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+                    Your watchlist is empty.
+                  </div>
+                ) : null}
+                {!watchlist.isLoading && watchlist.items.length > 0 ? (
+                  <ol className="space-y-3">
+                    {watchlist.items.map((theme) => {
+                      const articleState = watchlistArticles[theme.id];
+                      return (
+                        <li key={theme.id} className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4">
+                          <div className="mb-1 flex items-center justify-between gap-3">
+                            <h3 className="text-base font-semibold text-[var(--ink)]">{theme.canonical_label}</h3>
+                            <span className="rounded-full bg-[var(--warm-soft)] px-2.5 py-1 font-mono text-xs text-[var(--warm)]">
+                              {theme.article_count}
+                            </span>
+                          </div>
+                          <p className="text-xs text-[var(--muted)]">{theme.discovery_method} | {theme.status}</p>
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void toggleWatchlistThemeArticles(theme.id)}
+                              className="inline-flex items-center rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--ink)]"
+                            >
+                              {articleState?.isOpen ? "Hide Articles" : "View Articles"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void removeWatchlistTheme(theme.id)}
+                              disabled={watchlistActionThemeId === theme.id}
+                              className="inline-flex items-center rounded-full border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--danger)] disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {watchlistActionThemeId === theme.id ? "Removing..." : "Remove"}
+                            </button>
+                          </div>
+                          {articleState?.isOpen ? (
+                            <div className="mt-3 rounded-lg border border-[var(--edge)] bg-[var(--paper-soft)] p-3">
+                              {articleState.isLoading ? (
+                                <p className="text-sm text-[var(--muted)]">Loading watchlist articles...</p>
+                              ) : null}
+                              {articleState.error ? (
+                                <p className="text-sm text-[var(--danger)]">{articleState.error}</p>
+                              ) : null}
+                              {!articleState.isLoading && !articleState.error && articleState.items.length === 0 ? (
+                                <p className="text-sm text-[var(--muted)]">No linked articles yet.</p>
+                              ) : null}
+                              {!articleState.isLoading && !articleState.error && articleState.items.length > 0 ? (
+                                <ul className="space-y-2">
+                                  {articleState.items.slice(0, 5).map((article) => (
+                                    <li key={article.article_id}>
+                                      <a
+                                        href={article.canonical_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-sm font-medium text-[var(--accent)] underline"
+                                      >
+                                        {article.title ?? "(untitled)"}
+                                      </a>
+                                      <p className="mt-0.5 text-xs text-[var(--muted)]">
+                                        {article.source_name}
+                                        {article.published_at ? ` | ${new Date(article.published_at).toLocaleString()}` : ""}
+                                      </p>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                ) : null}
+              </>
+            )}
+          </article>
+
+          <article className="card px-5 py-5 sm:px-7 sm:py-6 lg:order-1 lg:col-span-2">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold text-[var(--ink)]">Hot Themes</h2>
+              <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1 font-mono text-xs text-[var(--accent)]">
+                now
+              </span>
+            </div>
+            {hotThemes.error ? (
+              <div className="rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+                {hotThemes.error}
+              </div>
+            ) : null}
+            {hotThemes.isLoading ? (
+              <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+                Loading hot themes...
+              </div>
+            ) : null}
+            {!hotThemes.isLoading && !hotThemes.error && hotThemes.items.length > 0 ? (
+              <ol className="space-y-3">
+                {hotThemes.items.map((theme, index) => (
+                  <li key={theme.id} className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4">
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <span className="font-mono text-xs text-[var(--muted)]">#{index + 1}</span>
+                      <span className="rounded-full bg-[var(--warm-soft)] px-2.5 py-1 font-mono text-xs text-[var(--warm)]">
+                        {theme.article_count} articles
+                      </span>
+                    </div>
+                    <h3 className="text-base font-semibold text-[var(--ink)]">{theme.canonical_label}</h3>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Link
+                        href={`/themes/${encodeURIComponent(theme.id)}`}
+                        className="inline-flex items-center rounded-full border border-[var(--edge)] bg-[var(--paper-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--ink)] hover:border-[var(--accent)]"
+                      >
+                        Timeline
+                      </Link>
+                      {user ? (
+                        <button
+                          type="button"
+                          onClick={() => void addThemeToWatchlist(theme.id)}
+                          disabled={watchlistActionThemeId === theme.id || watchlistThemeIds.has(theme.id)}
+                          className="inline-flex items-center rounded-full border border-[var(--accent-strong)] bg-[var(--accent-soft)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {watchlistThemeIds.has(theme.id) ? "Watching" : "Add Watchlist"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </article>
         </section>
 
-        <section className="card px-5 py-5 sm:px-7 sm:py-6">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-xl font-semibold text-[var(--ink)]">Ranked Results</h2>
-            <span className="rounded-full bg-[var(--warm-soft)] px-3 py-1 font-mono text-xs text-[var(--warm)]">
-              Top score: {topScore.toFixed(3)}
-            </span>
-          </div>
-          {search.error ? (
-            <div className="rounded-xl border border-[color:rgba(255,180,138,0.28)] bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
-              {search.error}
-            </div>
-          ) : null}
-          {!search.isLoading && search.results.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-[var(--edge)] bg-[var(--paper-soft)] px-4 py-8 text-center text-sm text-[var(--muted)]">
-              No results yet.
-            </div>
-          ) : null}
-          {!search.isLoading && search.results.length > 0 ? (
-            <ol className="space-y-3">
-              {search.results.map((result, index) => (
-                <li key={result.article_id} className="rounded-xl border border-[var(--edge)] bg-[var(--paper-strong)] p-4">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="font-mono text-xs text-[var(--muted)]">#{index + 1}</span>
-                    <span className="rounded-full bg-[var(--accent-soft)] px-2.5 py-1 font-mono text-xs text-[var(--accent)]">
-                      score {result.similarity.toFixed(3)}
-                    </span>
-                  </div>
-                  <h3 className="text-base font-semibold text-[var(--ink)]">{result.title ?? "(untitled)"}</h3>
-                  <p className="mt-1 text-xs text-[var(--muted)]">
-                    {result.source_name} |{" "}
-                    {result.published_at ? new Date(result.published_at).toLocaleString() : "Publish time unknown"}
-                  </p>
-                  <a
-                    href={result.canonical_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-3 inline-block text-sm font-medium text-[var(--accent)] underline"
-                  >
-                    Open article
-                  </a>
-                </li>
-              ))}
-            </ol>
-          ) : null}
-        </section>
       </main>
       <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
       <div className="fixed bottom-4 right-4 z-50 sm:bottom-6 sm:right-6">
